@@ -23,19 +23,46 @@ import { WORLD } from '../sim/terrain.js';
  * renderer implementation detail, and nobody playing wants to think about it.
  */
 export const ZOOM_STOPS = [
-  { zoom: 0.5, label: 'Whole map' },
-  { zoom: 0.75, label: 'Region' },
-  { zoom: 1, label: 'Roads' },
-  { zoom: 1.5, label: 'Town' },
+  { zoom: 0.35, label: 'Whole map' },
+  { zoom: 0.55, label: 'Region' },
+  { zoom: 0.85, label: 'Roads' },
+  { zoom: 1.4, label: 'Town' },
   { zoom: 2, label: 'Street' },
   { zoom: 3, label: 'Close up' },
 ];
 
 export const DEFAULT_STOP = 3;
 
-/** Integer bake size for a given zoom. */
-export function bakeScaleFor(zoom) {
-  return Math.max(1, Math.min(3, Math.round(zoom)));
+/**
+ * Zoom is continuous between these — the slider's stops are just convenient
+ * places to land, and a pinch gesture is free to sit anywhere in between.
+ */
+export const ZOOM_MIN = ZOOM_STOPS[0].zoom;
+export const ZOOM_MAX = ZOOM_STOPS[ZOOM_STOPS.length - 1].zoom;
+
+/** The stop a given zoom is closest to, so the slider and label can follow. */
+export function nearestStop(zoom) {
+  let best = 0;
+  for (let i = 1; i < ZOOM_STOPS.length; i++) {
+    if (Math.abs(ZOOM_STOPS[i].zoom - zoom) < Math.abs(ZOOM_STOPS[best].zoom - zoom)) best = i;
+  }
+  return best;
+}
+
+/**
+ * Integer bake size for a given zoom.
+ *
+ * `current` adds hysteresis. Re-baking costs every sprite plus a full repaint
+ * of the road layer, and a pinch gesture that happens to settle right on a
+ * bracket boundary would otherwise pay that bill several times a second. Pass
+ * the scale in use and the bracket only changes once the zoom is clearly past
+ * the boundary.
+ */
+export function bakeScaleFor(zoom, current = 0) {
+  const raw = Math.max(1, Math.min(3, Math.round(zoom)));
+  if (!current || raw === current) return raw;
+  const boundary = raw > current ? current + 0.5 : current - 0.5;
+  return Math.abs(zoom - boundary) < 0.12 ? current : raw;
 }
 
 export function makeCamera() {

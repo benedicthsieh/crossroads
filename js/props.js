@@ -1,22 +1,65 @@
-// props.js — buildings and scenery.
+// props.js — buildings, wagons and scenery.
 //
 // Same rules as the characters: authored small, blown up. Buildings are drawn
 // flat-on (no true isometric projection) which is the cheapest way to get a
 // storybook town that still sorts correctly by depth.
+//
+// One logical pixel here used to be exactly one world unit, which made the
+// buildings enormous: a house was wider than the gap the road had to squeeze
+// through, and twenty of them turned a town into a single brown blob. `UNIT`
+// below breaks that assumption — a building's logical pixels are now worth
+// less than a world unit each, so the same authored art occupies less ground.
+// The art itself is untouched; only how much of the map it claims changed.
 
 import { Pix, darken, lighten, mix, hash2 } from './pixel.js';
 import { STYLE, pal, styleKey } from './palette.js';
 
+/**
+ * World units per authored pixel, by prop family.
+ *
+ * These are the knobs for "how crowded does a town feel". Dropping `building`
+ * makes every settlement sprawl further for the same number of buildings,
+ * because the footprints in `sim/towns.js` stay put while the sprites shrink
+ * inside them. Characters are deliberately left at 1: shrinking people too
+ * would just undo the change.
+ */
+export const UNIT = {
+  building: 0.72,
+  wagon: 0.85,
+  scenery: 0.92,
+};
+
 const cache = new Map();
 
-function cached(key, build) {
-  const k = `${key}|${styleKey()}`;
+/**
+ * Bake a prop.
+ *
+ * `unit` is world units per authored pixel. The art is baked at the nearest
+ * whole pixel size that gets close, and the leftover fraction is handed back as
+ * `dw`/`dh` for the caller to draw at — the same trick `camera.js` already
+ * plays between `STYLE.scale` and `STYLE.zoom`, for the same reason: keep the
+ * rasteriser on whole pixels and let one resample close the gap.
+ */
+function cached(key, build, unit = 1) {
+  const bake = Math.max(1, Math.round(STYLE.scale * unit));
+  const k = `${key}|${styleKey()}|${bake}`;
   let hit = cache.get(k);
   if (hit) return hit;
   const { px, ax, ay } = build();
   px.rimLight(STYLE.rim * 0.7);
   px.outline(STYLE.outline);
-  hit = { canvas: px.toCanvas(STYLE.scale), ax: ax * STYLE.scale, ay: ay * STYLE.scale };
+  const canvas = px.toCanvas(bake);
+  // Final resample factor: what the sprite must be stretched by so that one
+  // authored pixel ends up covering exactly `unit` world units on screen.
+  const k2 = (unit * STYLE.scale) / bake;
+  hit = {
+    canvas,
+    ax: ax * bake * k2,
+    ay: ay * bake * k2,
+    dw: canvas.width * k2,
+    dh: canvas.height * k2,
+    unit,
+  };
   cache.set(k, hit);
   return hit;
 }
@@ -682,6 +725,160 @@ function cart() {
   return { px, ax: 17, ay: 20, lights: [] };
 }
 
+// -------------------------------------------------------------------- wagons
+//
+// The covered wagon is the single most important sprite in the game now: it is
+// what you see when you look at the map from far enough away to see the road
+// network, and it has to read as "traffic" at two pixels a world unit. Two
+// things do that work — the pale canvas hood, which is the only large light
+// shape out on the open ground, and the ox team, which gives the silhouette a
+// direction so a stopped caravan looks stopped.
+
+/** A spoked wheel, dark rim and a paler hub. */
+function wheel(px, cx, cy, r, p) {
+  px.disc(cx, cy, r, darken(p.woodDark, 0.15));
+  px.disc(cx, cy, r - 1.6, mix(p.wood, p.woodLight, 0.4));
+  px.fill(cx - r + 1, cy, r * 2 - 2, 1, darken(p.woodDark, 0.1));   // spokes
+  px.fill(cx, cy - r + 1, 1, r * 2 - 2, darken(p.woodDark, 0.1));
+  px.disc(cx, cy, 1.2, p.stoneDark);
+}
+
+// The ox is a much darker, greyer brown than the wagon it pulls. That is not a
+// realism call — the first version used the same timber brown and the two shapes
+// read as one lump at anything under 3x. The animal has to be a separate value
+// from the cart or the silhouette says nothing.
+const oxHide = (p) => mix(p.trunk, p.stoneDark, 0.42);
+
+/** A draft ox, seen from the side. Chunky enough to read at one pixel a unit. */
+function oxSide(px, x, y, p) {
+  const hide = oxHide(p);
+  const hideS = darken(hide, 0.26);
+  px.fill(x + 3, y - 9, 11, 6, hide);          // body
+  px.shadeOver(x + 3, y - 5, 11, 2, hideS);
+  px.fill(x + 4, y - 10, 8, 1, lighten(hide, 0.2));
+  px.fill(x + 12, y - 10, 2, 2, hideS);        // shoulder hump
+  px.fill(x + 4, y - 3, 2, 3, hideS);          // legs
+  px.fill(x + 8, y - 3, 2, 3, hide);
+  px.fill(x + 12, y - 3, 2, 3, hideS);
+  px.fill(x, y - 9, 4, 5, hide);               // head, dropped to graze height
+  px.shadeOver(x, y - 6, 4, 2, hideS);
+  px.fill(x - 1, y - 11, 2, 2, p.stone);       // horns
+  px.fill(x + 3, y - 11, 2, 2, p.stone);
+  px.set(x + 1, y - 8, p.eye);
+  px.fill(x + 14, y - 6, 2, 3, hideS);         // rump, meeting the traces
+}
+
+/** Same animal, coming at you. Mostly a head and shoulders. */
+function oxEnd(px, cx, y, p) {
+  const hide = oxHide(p);
+  const hideS = darken(hide, 0.26);
+  px.fill(cx - 5, y - 8, 10, 7, hide);
+  px.shadeOver(cx + 1, y - 8, 4, 7, hideS);
+  px.fill(cx - 3, y - 11, 6, 4, hide);         // head
+  px.shadeOver(cx + 1, y - 11, 2, 4, hideS);
+  px.fill(cx - 6, y - 12, 2, 2, p.stone);      // horns
+  px.fill(cx + 4, y - 12, 2, 2, p.stone);
+  px.fill(cx - 5, y - 13, 1, 1, p.stone);
+  px.fill(cx + 5, y - 13, 1, 1, p.stone);
+  px.set(cx - 2, y - 10, p.eye);
+  px.set(cx + 1, y - 10, p.eye);
+  px.fill(cx - 1, y - 8, 2, 1, darken(hideS, 0.3));   // muzzle
+  px.fill(cx - 4, y - 1, 2, 2, hideS);
+  px.fill(cx + 2, y - 1, 2, 2, hideS);
+}
+
+/**
+ * Covered wagon, side on.
+ * `frame` rocks the body a pixel so a moving caravan visibly trundles.
+ */
+function wagonSide(variant, frame) {
+  const p = pal();
+  const px = new Pix(50, 32);
+  const y = 29;                                 // ground line
+  const bob = frame % 2;
+  const canvasC = [p.plaster, mix(p.plaster, p.wheat, 0.3), mix(p.plaster, p.cloth[7][0], 0.35)][variant % 3];
+  const canvasS = darken(canvasC, 0.26);
+  const bx = 20;                                // wagon body, left edge
+  const bedY = y - 13 + bob;
+
+  oxSide(px, 1, y, p);
+  // Traces: a clear run of daylight between animal and cart. Without the gap
+  // the two silhouettes fuse and the whole thing reads as one brown box.
+  px.fill(17, bedY + 3, 3, 1, p.woodDark);
+  px.fill(bx - 1, bedY + 2, 2, 2, p.woodDark);
+
+  // Bed and side boards.
+  px.fill(bx, bedY, 26, 6, p.wood);
+  px.shadeOver(bx, bedY + 4, 26, 2, p.woodDark);
+  px.fill(bx, bedY, 26, 1, p.woodLight);
+  px.fill(bx, bedY, 1, 6, p.woodDark);
+  px.fill(bx + 25, bedY, 1, 6, p.woodDark);
+
+  // Canvas hood: an arch on five hoops. The lift is what makes it a hood rather
+  // than a crate — a flat top reads as cargo, a curved one reads as shelter.
+  const base = bedY;
+  for (let i = 0; i < 24; i++) {
+    const t = i / 23;
+    const lift = Math.round(Math.sin(t * Math.PI) * 3);
+    const h = 9 + lift;
+    px.fill(bx + 1 + i, base - h, 1, h, canvasC);
+    px.set(bx + 1 + i, base - h, lighten(canvasC, 0.26));
+  }
+  px.shadeOver(bx + 1, base - 3, 24, 3, canvasS);           // shaded under the curve
+  for (let i = 3; i < 23; i += 5) {                          // hoops showing through
+    const lift = Math.round(Math.sin((i / 23) * Math.PI) * 3);
+    px.fill(bx + 1 + i, base - 9 - lift + 1, 1, 8 + lift, mix(canvasC, canvasS, 0.6));
+  }
+  // Puckered opening at the back, gathered on a drawstring.
+  px.fill(bx + 23, base - 10, 3, 11, canvasS);
+  px.fill(bx + 24, base - 7, 2, 5, darken(canvasS, 0.35));
+
+  wheel(px, bx + 5, y - 3 + bob, 4, p);
+  wheel(px, bx + 21, y - 4 + bob, 5, p);
+  return { px, ax: bx + 13, ay: y + 2, lights: [] };
+}
+
+/**
+ * Covered wagon, end on — the view you get when it walks toward or away.
+ * `back` is the going-away view: the ox is hidden behind the hood, and what you
+ * see instead is the puckered opening in the canvas.
+ */
+function wagonEnd(variant, frame, back) {
+  const p = pal();
+  const px = new Pix(30, 34);
+  const y = 27;
+  const bob = frame % 2;
+  const cx = 15;
+  const canvasC = [p.plaster, mix(p.plaster, p.wheat, 0.3), mix(p.plaster, p.cloth[7][0], 0.35)][variant % 3];
+  const canvasS = darken(canvasC, 0.26);
+
+  px.fill(cx - 8, y - 12 + bob, 16, 5, p.wood);            // bed, seen end-on
+  px.shadeOver(cx + 3, y - 12 + bob, 5, 5, p.woodDark);
+  px.fill(cx - 8, y - 12 + bob, 16, 1, p.woodLight);
+
+  // The hood is a fat arch: a stack of rows that narrow toward the top.
+  for (let r = 0; r < 12; r++) {
+    const t = r / 11;
+    const w = Math.round(16 - Math.pow(t, 2.2) * 9);
+    px.fill(cx - (w >> 1), y - 13 - r + bob, w, 1, r > 9 ? lighten(canvasC, 0.22) : canvasC);
+  }
+  px.shadeOver(cx + 3, y - 24 + bob, 6, 12, canvasS);      // light from upper left
+
+  wheel(px, cx - 8, y - 3 + bob, 4, p);
+  wheel(px, cx + 8, y - 3 + bob, 4, p);
+
+  if (back) {
+    px.fill(cx - 4, y - 21 + bob, 8, 8, darken(canvasS, 0.45));       // the opening
+    px.fill(cx - 4, y - 21 + bob, 8, 1, canvasS);
+    px.fill(cx - 2, y - 17 + bob, 4, 3, mix(p.wheat, canvasS, 0.35)); // a bundle inside
+  } else {
+    // Drawn last and a touch lower: the team is nearer the camera than the
+    // wagon it is pulling, so it has to sit on top of the wheels.
+    oxEnd(px, cx, y + 4, p);
+  }
+  return { px, ax: cx, ay: y + 6, lights: [] };
+}
+
 /** Fingerpost: the little bit of set dressing that says "this is a junction". */
 function signpost() {
   const p = pal();
@@ -883,42 +1080,90 @@ const BUILDERS = {
   flowers0: () => flowers(0), flowers1: () => flowers(1),
 };
 
+// Wagons: three canvas colours, two frames of trundle, four headings. The
+// left-facing view is the side view mirrored, baked rather than flipped at draw
+// time so the hot path stays a plain drawImage.
+for (let v = 0; v < 3; v++) {
+  for (let f = 0; f < 2; f++) {
+    BUILDERS[`wagon${v}side${f}`] = () => wagonSide(v, f);
+    BUILDERS[`wagon${v}left${f}`] = () => {
+      const b = wagonSide(v, f);
+      const px = b.px.flipped();
+      return { px, ax: px.w - 1 - b.ax, ay: b.ay, lights: [] };
+    };
+    BUILDERS[`wagon${v}front${f}`] = () => wagonEnd(v, f, false);
+    BUILDERS[`wagon${v}back${f}`] = () => wagonEnd(v, f, true);
+  }
+}
+
+const BUILDING_NAMES = new Set([
+  'well', 'inn', 'bakery', 'marketplace', 'warehouse', 'lumberyard', 'smithy',
+  'cart', 'signpost', 'lamp', 'haystack', 'barrel', 'crate',
+  'house0', 'house1', 'house2',
+  'stall0back', 'stall0front', 'stall1back', 'stall1front', 'stall2back', 'stall2front',
+]);
+
+/** Which shrink factor a prop belongs to. */
+export function unitOf(name) {
+  if (name.startsWith('wagon')) return UNIT.wagon;
+  if (BUILDING_NAMES.has(name)) return UNIT.building;
+  return UNIT.scenery;
+}
+
+/**
+ * Get a baked prop.
+ *
+ * The returned `dw`/`dh` are the size to draw at, and they are *not* the
+ * canvas's own size — see `cached()`. Callers must use them or the shrink is
+ * silently lost.
+ */
 export function prop(name) {
   const build = BUILDERS[name];
   if (!build) throw new Error(`unknown prop: ${name}`);
+  const unit = unitOf(name);
   const key = `p|${name}`;
-  const full = `${key}|${styleKey()}`;
-  if (!cache.has(full)) {
+  const bake = Math.max(1, Math.round(STYLE.scale * unit));
+  if (!cache.has(`${key}|${styleKey()}|${bake}`)) {
     const built = build();
     LIGHTS.set(name, built.lights || []);
   }
-  return cached(key, build);
+  return cached(key, build, unit);
 }
 
-/** Local light positions for a prop, in logical pixels relative to its anchor. */
+/**
+ * Local light positions for a prop, in *world units* relative to its anchor —
+ * already scaled by the prop's unit, so callers can add them straight onto a
+ * building's world position.
+ */
 export function propLights(name) {
   if (!LIGHTS.has(name)) prop(name);
   const built = LIGHTS.get(name) || [];
-  const b = BUILDERS[name];
-  if (!b) return [];
-  // Convert from top-left local coords to anchor-relative offsets.
+  if (!BUILDERS[name]) return [];
   const meta = metaOf(name);
-  return built.map(([x, y]) => [x - meta.ax, y - meta.ay]);
+  const u = unitOf(name);
+  return built.map(([x, y]) => [(x - meta.ax) * u, (y - meta.ay) * u]);
 }
 
 const metaCache = new Map();
 function metaOf(name) {
-  if (!metaCache.has(name)) {
+  const u = unitOf(name);
+  // Keyed by unit as well as name: `UNIT` is mutable (the demo turns the shrink
+  // off), and a cached footprint from the wrong unit is a very quiet bug.
+  const key = `${name}|${u}`;
+  if (!metaCache.has(key)) {
     const built = BUILDERS[name]();
-    metaCache.set(name, {
-      ax: built.ax, ay: built.ay, w: built.px.w, h: built.px.h,
-      // Anchor-relative, so callers never need to know the grid layout.
-      chimney: built.chimney || null,
+    metaCache.set(key, {
+      ax: built.ax, ay: built.ay,
+      // Footprint in *world units*, which is what every caller actually wants:
+      // how much ground this thing covers, not how many pixels it was drawn in.
+      w: built.px.w * u, h: built.px.h * u,
+      // Anchor-relative and in world units too.
+      chimney: built.chimney ? [built.chimney[0] * u, built.chimney[1] * u] : null,
       forge: !!built.forge,
     });
     LIGHTS.set(name, built.lights || []);
   }
-  return metaCache.get(name);
+  return metaCache.get(key);
 }
 
 export function propMeta(name) {

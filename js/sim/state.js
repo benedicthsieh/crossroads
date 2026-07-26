@@ -13,17 +13,19 @@
 
 import { Rng } from './rng.js';
 import { generateTerrain, MAP, TILE, WORLD } from './terrain.js';
-import { decayWear, roadFrac, ROAD_MIN, WEAR_MAX } from './roads.js';
-import { considerFounding, growTown } from './towns.js';
+import { decayWear, roadFrac, ROAD_MIN, WEAR_MAX, bestJunction } from './roads.js';
+import { growTown, growPopulation, totalPopulation, TOWN_SPACING, housing, population } from './towns.js';
 import {
-  findGates, spawnTraveler, spawnResident, updateTravelers, creditPassers, MAX_TRAVELERS,
-} from './travelers.js';
+  findGates, spawnBorderCaravan, spawnTownCaravan, spawnTradeCaravan, borderInterval,
+  updateCaravans, creditPassers, MAX_CARAVANS,
+} from './caravans.js';
+import { updateResidents, balanceResidents } from './residents.js';
 
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 export { WORLD, MAP, TILE };
 
-const SPAWN_MIN = 1.1;
-const SPAWN_MAX = 2.6;
+/** How full a town has to be before its surplus starts leaving as caravans. */
+const EMIGRATE_FULL = 0.72;
 
 export function createState(seed = (Math.random() * 1e9) | 0) {
   const s = seed >>> 0 || 1;
@@ -37,13 +39,20 @@ export function createState(seed = (Math.random() * 1e9) | 0) {
     wear: new Float32Array(MAP.w * MAP.h),
     gates: findGates(terrain),
     towns: [],
-    travelers: [],
+    caravans: [],
+    residents: [],
+    // The best unclaimed crossroads on the map right now, or null. Derived from
+    // the wear field on a slow timer and cached here because every caravan that
+    // finishes a leg wants to know about it, and the scan is not cheap.
+    frontier: null,
     nextId: 1,
-    stats: { travelers: 0, trades: 0, paths: 0, distance: 0, roadTiles: 0 },
+    stats: {
+      caravans: 0, souls: 0, settled: 0, trades: 0, paths: 0, distance: 0, roadTiles: 0,
+    },
     // Transient. The renderer drains this every frame; it is never serialized,
     // because a popup that has already played has nothing to restore.
     events: [],
-    timers: { spawn: 0.5, upkeep: 0, found: 6, residents: 4 },
+    timers: { spawn: 2, upkeep: 0, frontier: 4, residents: 3 },
   };
   return state;
 }
@@ -55,13 +64,16 @@ export function step(state, dt) {
 
   const tm = state.timers;
 
+  // Arrivals from off the map. Frequent at first, rare once the world has
+  // towns of its own — by then most traffic is towns talking to each other.
   tm.spawn -= dt;
   if (tm.spawn <= 0) {
-    spawnTraveler(state);
-    tm.spawn = state.rng.range(SPAWN_MIN, SPAWN_MAX);
+    spawnBorderCaravan(state);
+    tm.spawn = borderInterval(state, state.rng);
   }
 
-  updateTravelers(state, dt);
+  updateCaravans(state, dt);
+  updateResidents(state, dt);
 
   // Housekeeping runs on its own clock. None of it needs frame resolution, and
   // the map-wide passes are wasteful at 60Hz.
@@ -70,27 +82,67 @@ export function step(state, dt) {
     const elapsed = 1.0;
     creditPassers(state);
     decayWear(state.wear, elapsed);
-    for (const town of state.towns) growTown(state, town);
+    for (const town of state.towns) {
+      growTown(state, town);
+      growPopulation(state, town, elapsed);
+      considerEmigration(state, town);
+      considerTrade(state, town);
+    }
     tm.upkeep = elapsed;
   }
 
-  tm.found -= dt;
-  if (tm.found <= 0) {
-    considerFounding(state);
-    tm.found = 5;
+  // The frontier scan is the expensive one: every caravan deciding where to go
+  // reads the result, but none of them need it fresher than this.
+  tm.frontier -= dt;
+  if (tm.frontier <= 0) {
+    tm.frontier = 6;
+    state.frontier = bestJunction(state, 3, 0.95, TOWN_SPACING);
     state.stats.roadTiles = countRoads(state);
   }
 
-  // Towns fill up with people who live there once there's something to live in.
+  // Keep each town's visible crowd in step with how many people live there.
   tm.residents -= dt;
   if (tm.residents <= 0) {
     tm.residents = 3;
-    for (const town of state.towns) {
-      const want = Math.min(7, Math.floor(town.buildings.length / 2));
-      const have = state.travelers.filter((t) => t.resident === town.id).length;
-      if (have < want && state.travelers.length < MAX_TRAVELERS + 20) spawnResident(state, town);
-    }
+    balanceResidents(state);
   }
+}
+
+/**
+ * A town with more people than it knows what to do with sends some away.
+ *
+ * This is what shifts the source of traffic from the borders to the map itself.
+ * A full town keeps pushing caravans out; those caravans wear the roads between
+ * settlements, feed the towns they pass through, and eventually found or fill
+ * the next one. Nothing tells them to — they are just surplus with somewhere to
+ * be.
+ */
+function considerEmigration(state, town) {
+  if (state.caravans.length >= MAX_CARAVANS) return;
+  const beds = housing(town);
+  if (population(town) < beds * EMIGRATE_FULL) return;
+  if (town.buildings.length < 3) return;
+  const crowding = population(town) / Math.max(1, beds);
+  if (state.rng.chance(0.02 * crowding)) spawnTownCaravan(state, town);
+}
+
+/**
+ * A town sending a trade run to its neighbours.
+ *
+ * Emigration alone cannot keep the map busy: a town can only export people as
+ * fast as it grows them, which works out at a caravan every couple of minutes.
+ * Trade runs come *back*, so they cost the town nothing permanent and can leave
+ * far more often. This is what stops the late game looking deserted, and what
+ * keeps the roads between towns from decaying once the borders go quiet.
+ */
+function considerTrade(state, town) {
+  if (state.caravans.length >= MAX_CARAVANS) return;
+  if (state.towns.length < 2) return;
+  if (town.buildings.length < 4) return;
+  if (population(town) < 25) return;
+  // Busier towns trade more, so a trunk-road town visibly out-trades a quiet one.
+  const rate = 0.012 + 0.0016 * Math.min(12, town.buildings.length);
+  if (state.rng.chance(rate)) spawnTradeCaravan(state, town);
 }
 
 function countRoads(state) {
@@ -173,19 +225,32 @@ export function snapshot(state) {
     wear: encodeWear(state.wear),
     towns: state.towns.map((t) => ({
       id: t.id, name: t.name, x: t.x, y: t.y, founded: Math.round(t.founded),
-      traffic: Math.round(t.traffic * 10) / 10, radius: Math.round(t.radius), arms: t.arms,
+      traffic: Math.round(t.traffic * 10) / 10, pop: Math.round(t.pop * 10) / 10,
+      radius: Math.round(t.radius), arms: t.arms,
       buildings: t.buildings.map((b) => ({
         kind: b.kind, x: b.x, y: b.y, variant: b.variant, born: Math.round(b.born),
       })),
     })),
-    travelers: state.travelers.map((t) => ({
-      id: t.id, seed: t.seed, role: t.role,
-      x: Math.round(t.x * 10) / 10, y: Math.round(t.y * 10) / 10,
-      vx: Math.round(t.vx * 100) / 100, vy: Math.round(t.vy * 100) / 100,
-      walked: Math.round(t.walked * 10) / 10,
-      speed: Math.round(t.speed * 10) / 10,
-      carry: t.carry, legs: t.legs, leg: t.leg,
-      rest: Math.round(t.rest * 10) / 10, resident: t.resident,
+    caravans: state.caravans.map((c) => ({
+      id: c.id, seed: c.seed,
+      x: Math.round(c.x * 10) / 10, y: Math.round(c.y * 10) / 10,
+      vx: Math.round(c.vx * 100) / 100, vy: Math.round(c.vy * 100) / 100,
+      walked: Math.round(c.walked * 10) / 10,
+      speed: Math.round(c.speed * 10) / 10,
+      wagons: c.wagons, souls: c.souls, carry: c.carry, goal: c.goal,
+      legs: c.legs, leg: c.leg, home: c.home,
+      rest: Math.round(c.rest * 10) / 10, origin: c.origin,
+    })),
+    // Residents are a *sample* of a town's population, not the population
+    // itself — `town.pop` is the real number. They're stored anyway so a
+    // restored town doesn't briefly stand empty while the sampler catches up.
+    residents: state.residents.map((r) => ({
+      id: r.id, seed: r.seed, role: r.role, town: r.town,
+      x: Math.round(r.x * 10) / 10, y: Math.round(r.y * 10) / 10,
+      vx: Math.round(r.vx * 100) / 100, vy: Math.round(r.vy * 100) / 100,
+      walked: Math.round(r.walked * 10) / 10,
+      speed: Math.round(r.speed * 10) / 10,
+      carry: r.carry, rest: Math.round(r.rest * 10) / 10,
     })),
   };
 }
@@ -202,10 +267,19 @@ export function restore(snap) {
   Object.assign(state.stats, snap.stats || {});
   Object.assign(state.timers, snap.timers || {});
   decodeWear(snap.wear || '', state.wear);
-  state.towns = (snap.towns || []).map((t) => ({ ...t, buildings: [...(t.buildings || [])] }));
-  state.travelers = (snap.travelers || []).map((t) => ({
-    ...t,
-    path: null,     // recomputed on the traveller's next tick
+  state.towns = (snap.towns || []).map((t) => ({
+    pop: 0, ...t, buildings: [...(t.buildings || [])],
+  }));
+  state.caravans = (snap.caravans || []).map((c) => ({
+    ...c,
+    path: null,     // recomputed on the caravan's next tick
+    pi: 0,
+    done: false,
+  }));
+  state.residents = (snap.residents || []).map((r) => ({
+    ...r,
+    goal: null,
+    path: null,
     pi: 0,
     done: false,
   }));
@@ -213,4 +287,4 @@ export function restore(snap) {
 }
 
 /** Convenience for the HUD and the road painter. */
-export { roadFrac };
+export { roadFrac, totalPopulation };

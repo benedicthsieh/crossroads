@@ -6,7 +6,10 @@
 
 import { snapshot, restore, SAVE_VERSION } from './state.js';
 
-const KEY = 'crossroads.save.v2';
+// Versioned key rather than a versioned payload check: a v2 save describes a
+// world of lone travellers and has no caravans in it at all, so there is
+// nothing to migrate. Bumping the key just makes the old one invisible.
+const KEY = 'crossroads.save.v3';
 
 export function saveLocal(state) {
   try {

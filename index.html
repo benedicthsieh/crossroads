@@ -11,7 +11,7 @@
 <div id="app">
   <div id="stage">
     <canvas id="view"></canvas>
-    <div id="hint">drag to pan · scroll to zoom · click a traveller to follow · space to pause</div>
+    <div id="hint">drag to pan · scroll or pinch to zoom · tap a caravan to follow · space to pause</div>
     <div id="toast" hidden></div>
   </div>
 
@@ -55,8 +55,9 @@
       <dl class="stats">
         <dt>Elapsed</dt><dd id="statTime">0:00</dd>
         <dt>Towns</dt><dd id="statTowns">0</dd>
+        <dt>Townsfolk</dt><dd id="statSettled">0</dd>
         <dt>On the road</dt><dd id="statPop">0</dd>
-        <dt>Travellers so far</dt><dd id="statTravelers">0</dd>
+        <dt>Settled so far</dt><dd id="statTravelers">0</dd>
         <dt>Road tiles</dt><dd id="statRoads">0</dd>
         <dt>Trades</dt><dd id="statTrades">0</dd>
         <dt>FPS</dt><dd id="statFps">0</dd>
@@ -100,8 +101,13 @@
         expensive, so traffic funnels through fords and passes.</li>
         <li><b>Wear compounds.</b> Walked ground is easier to walk, so the first faint
         tracks pull in the next travellers and thicken into roads.</li>
-        <li><b>Crossroads settle.</b> Where three or more busy roads meet, somebody digs a
-        well — and the buildings follow the traffic.</li>
+        <li><b>Crossroads settle.</b> A caravan carrying enough people weighs up every town
+        it could join against the best empty junction on the map, and sometimes stops for
+        good — that is where towns come from.</li>
+        <li><b>Housing decides who stays.</b> Towns build homes when they run short of beds,
+        and a town with free beds is the one passing caravans choose.</li>
+        <li><b>The borders go quiet.</b> Arrivals from off the map taper off; before long
+        most traffic is towns sending their own surplus somewhere else.</li>
         <li><b>A ford that gets busy enough becomes a bridge.</b></li>
       </ul>
       <p class="tiny">The old art-style test, with the palette, outline and rim-light knobs

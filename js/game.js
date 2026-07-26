@@ -7,12 +7,13 @@
 // derived from the state or is a view setting nobody needs restored.
 
 import { STYLE } from './palette.js';
-import { createState, step, snapshot } from './sim/state.js';
+import { createState, step, snapshot, totalPopulation } from './sim/state.js';
 import { WORLD, TERRAIN_NAMES, MAP, TILE } from './sim/terrain.js';
+import { housing, population } from './sim/towns.js';
 import { saveLocal, loadLocal, hasLocal, toShareCode, fromShareCode, saveSize } from './sim/save.js';
 import {
-  makeCamera, resizeCamera, applyTransform, toScreen, toWorld, clampCamera,
-  ZOOM_STOPS, DEFAULT_STOP, bakeScaleFor,
+  makeCamera, resizeCamera, applyTransform, toWorld, clampCamera,
+  ZOOM_STOPS, DEFAULT_STOP, bakeScaleFor, ZOOM_MIN, ZOOM_MAX, nearestStop,
 } from './render/camera.js';
 import { createRenderer, drawScene, tickSmoke, updateFx, updateRoadLayer } from './render/scene.js';
 
@@ -46,22 +47,52 @@ function adoptState(next) {
   refreshTowns();
 }
 
-function applyZoom(stop) {
-  zoomStop = Math.max(0, Math.min(ZOOM_STOPS.length - 1, stop));
-  const next = ZOOM_STOPS[zoomStop];
-  const bake = bakeScaleFor(next.zoom);
+/**
+ * Set the zoom, optionally keeping one screen point pinned to the world under
+ * it — which is what a pinch gesture and a wheel-over-the-cursor both want.
+ *
+ * Zoom itself is continuous; only the *bake* scale is bracketed, and crossing a
+ * bracket is the only thing here that costs anything (see camera.js).
+ */
+function setZoom(zoom, anchorCssX, anchorCssY) {
+  const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
+  if (next === STYLE.zoom) return;
+
+  let anchorWorld = null;
+  if (anchorCssX != null) anchorWorld = screenToWorld(anchorCssX, anchorCssY);
+
+  const bake = bakeScaleFor(next);
   const rebake = bake !== STYLE.scale;
-  STYLE.zoom = next.zoom;
+  STYLE.zoom = next;
   STYLE.scale = bake;
   applyTransform(cam, canvas, g, dpr);
   if (rebake && renderer) {
     renderer.rebakeArt(state);
     renderer.rebuildWorld(state);
   }
+
+  if (anchorWorld) {
+    // Put the same world point back under the same finger.
+    const after = screenToWorld(anchorCssX, anchorCssY);
+    cam.x += anchorWorld[0] - after[0];
+    cam.y += anchorWorld[1] - after[1];
+  }
   clampCamera(cam);
-  const slider = document.getElementById('zoom');
-  slider.value = String(zoomStop);
-  document.getElementById('zoomVal').textContent = next.label;
+  syncZoomUi();
+}
+
+function syncZoomUi() {
+  zoomStop = nearestStop(STYLE.zoom);
+  document.getElementById('zoom').value = String(zoomStop);
+  document.getElementById('zoomVal').textContent = ZOOM_STOPS[zoomStop].label;
+}
+
+/** Jump to one of the slider's named stops. */
+function applyZoom(stop) {
+  const i = Math.max(0, Math.min(ZOOM_STOPS.length - 1, stop));
+  setZoom(ZOOM_STOPS[i].zoom);
+  zoomStop = i;
+  syncZoomUi();
 }
 
 // -------------------------------------------------------------------- loop
@@ -104,7 +135,8 @@ function frame(now) {
   updateRoadLayer(renderer.roads, state);
 
   if (cam.follow != null) {
-    const t = state.travelers.find((x) => x.id === cam.follow);
+    const t = state.caravans.find((x) => x.id === cam.follow)
+      || state.residents.find((x) => x.id === cam.follow);
     if (t) {
       cam.x += (t.x - cam.x) * Math.min(1, raw * 3);
       cam.y += (t.y - cam.y) * Math.min(1, raw * 3);
@@ -121,15 +153,54 @@ function frame(now) {
 
 // ----------------------------------------------------------------- input
 
+// Pointers are tracked in a map rather than as a single drag, because the same
+// three handlers have to serve a mouse, one finger panning, and two fingers
+// pinching. `pinch` is non-null only while exactly two are down.
+const pointers = new Map();
+let pinch = null;
+
+const localX = (e) => e.clientX - canvas.getBoundingClientRect().left;
+const localY = (e) => e.clientY - canvas.getBoundingClientRect().top;
+
+function pinchState() {
+  const [a, b] = [...pointers.values()];
+  return {
+    dist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+    cx: (a.x + b.x) / 2,
+    cy: (a.y + b.y) / 2,
+  };
+}
+
 canvas.addEventListener('pointerdown', (e) => {
-  cam.dragging = true;
-  cam.lx = e.clientX;
-  cam.ly = e.clientY;
-  cam.moved = 0;
   canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size === 2) {
+    const p = pinchState();
+    pinch = { dist: p.dist, zoom: STYLE.zoom };
+    cam.dragging = false;
+  } else if (pointers.size === 1) {
+    cam.dragging = true;
+    cam.lx = e.clientX;
+    cam.ly = e.clientY;
+    cam.moved = 0;
+  }
 });
 
 canvas.addEventListener('pointermove', (e) => {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  if (pinch && pointers.size === 2) {
+    const p = pinchState();
+    const rect = canvas.getBoundingClientRect();
+    // Zoom about the midpoint between the fingers, so the map stays put under
+    // the gesture instead of sliding out from under it.
+    setZoom(pinch.zoom * (p.dist / pinch.dist), p.cx - rect.left, p.cy - rect.top);
+    cam.follow = null;
+    renderer.follow = null;
+    return;
+  }
+
   if (!cam.dragging) return;
   const dx = e.clientX - cam.lx, dy = e.clientY - cam.ly;
   cam.lx = e.clientX;
@@ -144,20 +215,48 @@ canvas.addEventListener('pointermove', (e) => {
   }
 });
 
-canvas.addEventListener('pointerup', (e) => {
-  cam.dragging = false;
-  if (cam.moved > 4) return;
-  const r = canvas.getBoundingClientRect();
-  const [wx, wy] = screenToWorld(e.clientX - r.left, e.clientY - r.top);
-  let best = null, bestD = 16;
-  for (const t of state.travelers) {
-    const d = Math.hypot(t.x - wx, (t.y - 6 - wy) * 0.8);
-    if (d < bestD) { bestD = d; best = t; }
+function endPointer(e) {
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinch = null;
+  if (pointers.size === 1) {
+    // Coming out of a pinch with one finger still down: re-anchor the pan so
+    // the map doesn't jump by however far the lifted finger was away.
+    const [only] = [...pointers.values()];
+    cam.lx = only.x;
+    cam.ly = only.y;
+    cam.moved = 99;              // treat the rest of this gesture as a drag
+    cam.dragging = true;
   }
-  cam.follow = best ? best.id : null;
-  renderer.follow = cam.follow;
-  refreshHud();
+  if (pointers.size === 0) cam.dragging = false;
+}
+
+canvas.addEventListener('pointerup', (e) => {
+  const wasPinching = pinch != null || pointers.size > 1;
+  const moved = cam.moved;
+  endPointer(e);
+  if (wasPinching || moved > 4) return;
+  pickAt(localX(e), localY(e));
 });
+
+canvas.addEventListener('pointercancel', endPointer);
+
+/** Follow whatever is under this point: a caravan, or somebody on foot. */
+function pickAt(cssX, cssY) {
+  const [wx, wy] = screenToWorld(cssX, cssY);
+  let best = null, bestD = 26;
+  for (const c of state.caravans) {
+    const d = Math.hypot(c.x - wx, (c.y - 8 - wy) * 0.8);
+    if (d < bestD) { bestD = d; best = c.id; }
+  }
+  let bestPerson = 16;
+  for (const p of state.residents) {
+    const d = Math.hypot(p.x - wx, (p.y - 6 - wy) * 0.8);
+    if (d < bestPerson) { bestPerson = d; best = p.id; }
+  }
+  cam.follow = best;
+  renderer.follow = best;
+  refreshHud();
+}
 
 /** CSS pixels within the canvas -> world units. */
 function screenToWorld(cssX, cssY) {
@@ -167,7 +266,9 @@ function screenToWorld(cssX, cssY) {
 
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  applyZoom(zoomStop + (e.deltaY > 0 ? -1 : 1));
+  // Continuous, and anchored on the cursor — the same code path the pinch uses.
+  const factor = Math.exp(-e.deltaY * 0.0018);
+  setZoom(STYLE.zoom * factor, localX(e), localY(e));
 }, { passive: false });
 
 window.addEventListener('keydown', (e) => {
@@ -210,30 +311,46 @@ function clock(seconds) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+const terrainUnder = (x, y) => TERRAIN_NAMES[state.terrain.kind[
+  Math.min(MAP.h - 1, Math.floor(y / TILE)) * MAP.w + Math.min(MAP.w - 1, Math.floor(x / TILE))
+]];
+
 function refreshHud() {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  let onRoad = 0;
+  for (const c of state.caravans) onRoad += c.souls;
   set('statTime', clock(state.time));
   set('statTowns', state.towns.length);
-  set('statPop', state.travelers.length);
-  set('statTravelers', state.stats.travelers);
+  set('statSettled', totalPopulation(state));
+  set('statPop', `${onRoad} in ${state.caravans.length}`);
+  set('statTravelers', state.stats.settled);
   set('statRoads', state.stats.roadTiles);
   set('statTrades', state.stats.trades);
   set('statFps', fps);
 
   const card = document.getElementById('card');
-  const t = cam.follow != null ? state.travelers.find((x) => x.id === cam.follow) : null;
-  if (t) {
+  const c = cam.follow != null ? state.caravans.find((x) => x.id === cam.follow) : null;
+  const p = !c && cam.follow != null ? state.residents.find((x) => x.id === cam.follow) : null;
+
+  if (c) {
     card.hidden = false;
-    const tile = state.terrain.kind[
-      Math.min(MAP.h - 1, Math.floor(t.y / TILE)) * MAP.w + Math.min(MAP.w - 1, Math.floor(t.x / TILE))
-    ];
-    const leg = t.legs && t.legs[t.leg];
-    const heading = !leg ? 'looking around'
-      : leg.kind === 'town' ? `bound for ${(state.towns.find((x) => x.id === leg.townId) || {}).name || 'town'}`
-        : leg.kind === 'gate' ? 'leaving by the far road' : 'running an errand';
-    set('cardName', `#${t.id}`);
-    set('cardRole', t.resident ? `${t.role}, local` : t.role);
-    set('cardItem', `${heading} · crossing ${TERRAIN_NAMES[tile]}${t.carry ? ` · carrying ${t.carry}` : ''}`);
+    const leg = c.legs && c.legs[c.leg];
+    const named = (id) => (state.towns.find((t) => t.id === id) || {}).name || 'town';
+    const heading = !leg ? 'deciding'
+      : leg.kind === 'join' ? `looking for a home in ${named(leg.townId)}`
+        : leg.kind === 'found' ? 'headed for an empty crossroads to settle'
+          : leg.kind === 'market' ? `calling in at ${named(leg.townId)}`
+            : leg.kind === 'home' ? `heading home to ${named(leg.townId)}`
+              : 'leaving by the far road';
+    set('cardName', `${c.home ? 'Trade run' : 'Caravan'} #${c.id}`);
+    set('cardRole', `${c.wagons} wagon${c.wagons === 1 ? '' : 's'}, ${c.souls} souls`);
+    set('cardItem', `${heading} · crossing ${terrainUnder(c.x, c.y)}${c.carry ? ` · carrying ${c.carry}` : ''}`);
+  } else if (p) {
+    card.hidden = false;
+    const town = state.towns.find((t) => t.id === p.town);
+    set('cardName', `#${p.id}`);
+    set('cardRole', `${p.role}${town ? `, of ${town.name}` : ''}`);
+    set('cardItem', `running an errand · on ${terrainUnder(p.x, p.y)}${p.carry ? ` · carrying ${p.carry}` : ''}`);
   } else {
     card.hidden = true;
   }
@@ -250,8 +367,9 @@ function refreshTowns() {
   }
   for (const t of state.towns) {
     const li = document.createElement('li');
-    li.innerHTML = `<b>${t.name}</b> — ${t.buildings.length} building${t.buildings.length === 1 ? '' : 's'},
-      founded at ${clock(t.founded)}`;
+    const beds = housing(t) - population(t);
+    li.innerHTML = `<b>${t.name}</b> — ${population(t)} people, ${t.buildings.length}
+      building${t.buildings.length === 1 ? '' : 's'}, ${beds > 0 ? `${beds} bed${beds === 1 ? '' : 's'} free` : 'full'}`;
     li.style.cursor = 'pointer';
     li.onclick = () => {
       cam.follow = null;

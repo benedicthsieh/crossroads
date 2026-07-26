@@ -9,7 +9,7 @@
 
 import { STYLE, pal, PALETTES } from '../../js/palette.js';
 import { villagerFrame, chickenFrame, dogFrame, clearSpriteCache } from '../../js/sprites.js';
-import { prop, propMeta, clearPropCache } from '../../js/props.js';
+import { prop, propMeta, clearPropCache, UNIT } from '../../js/props.js';
 import {
   WORLD, PROPS, POI, scatter, bakeGround, collectLights,
 } from './world.js';
@@ -17,6 +17,14 @@ import {
   buildCast, buildCritters, spawnTraveler, stats, Actor,
 } from './agents.js';
 import { updateFx, drawFx, drawBubble, smoke, clearFx } from '../../js/fx.js';
+
+// The demo is a hand-placed town laid out back when one authored pixel was one
+// world unit, and it is also where the art gets judged — so it opts out of the
+// shrink the game applies to buildings and scenery. Everything here is drawn at
+// exactly the size it was drawn at.
+UNIT.building = 1;
+UNIT.wagon = 1;
+UNIT.scenery = 1;
 
 const canvas = document.getElementById('view');
 const g = canvas.getContext('2d', { alpha: false });

@@ -16,8 +16,14 @@ import { hash3 } from './rng.js';
 
 // One tile is 6 world units — roughly a third of a villager's height, small
 // enough that a worn track reads as a track rather than as a tiled corridor.
+//
+// The map is deliberately far larger than a screenful. Caravans have to be able
+// to travel long enough for the decision "settle here or push on" to mean
+// something, and four or five towns need room to sit apart without their
+// outskirts touching. Everything downstream (gate spacing, town spacing, how
+// long a road takes to wear in) is tuned against these numbers.
 export const TILE = 6;
-export const MAP = { w: 300, h: 200 };
+export const MAP = { w: 420, h: 280 };
 export const WORLD = { w: MAP.w * TILE, h: MAP.h * TILE };
 
 export const T = {
@@ -126,10 +132,13 @@ function carveRivers(elev, water, ford, flow, seed) {
   }
   sources.sort((a, b) => b.e - a.e);
 
+  // River count scales with the map: the point of a river is to cut the world
+  // into pieces that traffic has to funnel between, and six of them spread over
+  // a 420x280 map leaves whole quadrants with nothing to argue with.
   const chosen = [];
   for (const s of sources) {
-    if (chosen.length >= 6) break;
-    if (chosen.some((c) => Math.hypot(c.x - s.x, c.y - s.y) < 42)) continue;
+    if (chosen.length >= 9) break;
+    if (chosen.some((c) => Math.hypot(c.x - s.x, c.y - s.y) < 52)) continue;
     chosen.push(s);
   }
 

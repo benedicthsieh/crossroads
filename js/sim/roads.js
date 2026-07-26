@@ -111,7 +111,7 @@ export function bestJunction(state, minArms, minWear, minDistance) {
   // Step 2 because a junction is several tiles wide; checking every tile just
   // costs time to find the same spot. The border margin keeps towns off the
   // edge of the world, where half the roads through them would be off-map.
-  const EDGE = 16;
+  const EDGE = 26;
   for (let ty = EDGE; ty < MAP.h - EDGE; ty += 2) {
     for (let tx = EDGE; tx < MAP.w - EDGE; tx += 2) {
       const i = ty * MAP.w + tx;
@@ -121,7 +121,9 @@ export function bestJunction(state, minArms, minWear, minDistance) {
       const arms = armCount(wear, tx, ty);
       if (arms < minArms) continue;
       const score = wear[i] * arms;
-      if (!best || score > best.score) best = { tx, ty, x: wx, y: wy, arms, score };
+      if (!best || score > best.score) {
+        best = { tx, ty, x: wx, y: wy, arms, wear: wear[i], score };
+      }
     }
   }
   return best;

@@ -50,7 +50,7 @@ function buildingProps(b) {
 }
 
 const depthOf = (q) => (q.sortY != null ? q.sortY : q.y);
-const SHADOWED = /tree|pine|crag|house|inn|bakery|stall|well|cart|haystack|market|warehouse|lumber|smithy/;
+const SHADOWED = /tree|pine|crag|house|inn|bakery|stall|well|cart|haystack|market|warehouse|lumber|smithy|wagon/;
 
 // ------------------------------------------------------------ the renderer
 
@@ -140,6 +140,11 @@ export function createRenderer(state) {
         structural = true;
       } else if (e.type === 'founded') {
         sparkle(e.x, e.y - 6, 20);
+      } else if (e.type === 'settled') {
+        // A caravan unloading for good. Worth marking: it is the moment the
+        // player's attention should move from the road to the town.
+        sparkle(e.x, e.y - 10, 14);
+        popIcon(e.x, e.y - 22, 'basket', 0);
       }
     }
     st.events.length = 0;
@@ -204,11 +209,21 @@ function shadowFor(g, r, sx, sy, w) {
 
 // ------------------------------------------------------------------ pieces
 
+/**
+ * Draw a prop at its world position.
+ *
+ * `dw`/`dh` come from the prop's unit shrink (see `props.js`) and are not the
+ * canvas's own size, so this must always be the nine-argument drawImage.
+ */
+function drawProp(g, r, cam, name, wx, wy, shadow = true) {
+  const spr = prop(name);
+  const [sx, sy] = toScreen(cam, wx, wy);
+  if (shadow && SHADOWED.test(name)) shadowFor(g, r, sx, sy, spr.dw * 0.55);
+  g.drawImage(spr.canvas, Math.round(sx - spr.ax), Math.round(sy - spr.ay), spr.dw, spr.dh);
+}
+
 function drawStatic(g, r, cam, q) {
-  const spr = prop(q.name);
-  const [sx, sy] = toScreen(cam, q.x, q.y);
-  if (SHADOWED.test(q.name)) shadowFor(g, r, sx, sy, spr.canvas.width * 0.55);
-  g.drawImage(spr.canvas, Math.round(sx - spr.ax), Math.round(sy - spr.ay));
+  drawProp(g, r, cam, q.name, q.x, q.y);
 }
 
 function viewOf(t) {
@@ -216,7 +231,7 @@ function viewOf(t) {
   return t.vy > 0 ? 'front' : 'back';
 }
 
-function drawTraveler(g, r, cam, t) {
+function drawPerson(g, r, cam, t, id) {
   const look = r.lookFor(t);
   const moving = t.rest <= 0;
   const frame = moving
@@ -227,15 +242,90 @@ function drawTraveler(g, r, cam, t) {
   shadowFor(g, r, sx, sy, 8 * STYLE.scale);
   g.drawImage(spr.canvas, Math.round(sx - spr.ax), Math.round(sy - spr.ay));
 
-  if (r.follow === t.id) {
-    g.strokeStyle = pal().coin;
-    g.lineWidth = Math.max(1, STYLE.scale / 2);
-    g.beginPath();
-    g.ellipse(sx, sy - STYLE.scale * 0.5, 6 * STYLE.scale, 2.4 * STYLE.scale, 0, 0, Math.PI * 2);
-    g.stroke();
-  }
+  if (id != null && r.follow === id) followRing(g, sx, sy, 6);
   if (STYLE.labels) {
     label(g, t.role, sx, sy - spr.canvas.height - 3 * STYLE.scale);
+  }
+}
+
+function followRing(g, sx, sy, rx) {
+  g.strokeStyle = pal().coin;
+  g.lineWidth = Math.max(1, STYLE.scale / 2);
+  g.beginPath();
+  g.ellipse(sx, sy - STYLE.scale * 0.5, rx * STYLE.scale, rx * 0.4 * STYLE.scale, 0, 0, Math.PI * 2);
+  g.stroke();
+}
+
+// ------------------------------------------------------------------ caravans
+//
+// A caravan is one object in the sim and several on screen: a wagon per five
+// souls, strung out along the road behind the lead, plus a couple of drovers
+// walking beside them. The sim never knows about any of that — it stores a
+// position and a heading, and the layout below is derived from the caravan's
+// seed, so it is stable across a save and identical on two clients.
+
+/** Gap between wagons in a train, in world units. */
+const WAGON_GAP = 30;
+
+/**
+ * Where each piece of a caravan sits, relative to the caravan's own position.
+ * Returns world-space items with their own depth key so they sort correctly
+ * against buildings and everybody else.
+ */
+export function caravanParts(c) {
+  const view = viewOf(c);
+  const frame = Math.floor(c.walked / 5) % 2;
+  const variant = c.seed % 3;
+  // Heading, normalised. A stopped caravan keeps whatever it last had.
+  const len = Math.hypot(c.vx, c.vy) || 1;
+  const hx = c.vx / len, hy = c.vy / len;
+  const parts = [];
+
+  for (let i = 0; i < c.wagons; i++) {
+    parts.push({
+      kind: 'wagon',
+      name: `wagon${(variant + i) % 3}${view}${frame}`,
+      x: c.x - hx * WAGON_GAP * i,
+      y: c.y - hy * WAGON_GAP * i,
+    });
+  }
+
+  // Drovers: one alongside the lead team, one bringing up the rear. Two is
+  // enough to say "people" — drawing all twenty-five souls is exactly the thing
+  // this whole redesign exists to stop doing.
+  const px = -hy, py = hx;                    // perpendicular to the heading
+  const walkers = Math.min(2, c.wagons);
+  for (let i = 0; i < walkers; i++) {
+    const side = i % 2 === 0 ? 1 : -1;
+    const back = WAGON_GAP * (i * (c.wagons - 1) + 0.35);
+    parts.push({
+      kind: 'drover',
+      seed: c.seed + i * 977,
+      role: i === 0 ? 'peddler' : 'guard',
+      x: c.x - hx * back + px * side * 11,
+      y: c.y - hy * back + py * side * 11,
+      vx: hx,
+      vy: hy,
+      walked: c.walked + i * 7,
+      rest: c.rest,
+      carry: i === 0 ? c.carry : null,
+    });
+  }
+  return parts;
+}
+
+function drawCaravan(g, r, cam, c) {
+  for (const part of caravanParts(c)) {
+    if (part.kind === 'wagon') drawProp(g, r, cam, part.name, part.x, part.y);
+    else drawPerson(g, r, cam, part, null);
+  }
+  if (r.follow === c.id) {
+    const [sx, sy] = toScreen(cam, c.x, c.y);
+    followRing(g, sx, sy, 13);
+  }
+  if (STYLE.labels) {
+    const [sx, sy] = toScreen(cam, c.x, c.y);
+    label(g, `${c.souls} souls`, sx, sy - 26 * STYLE.scale);
   }
 }
 
@@ -329,10 +419,16 @@ export function drawScene(g, r, cam, state) {
     g.drawImage(r.roads.canvas, sx0, sy0, sx1 - sx0, sy1 - sy0, Math.round(dx), Math.round(dy), dw, dh);
   }
 
-  // Depth-sorted merge of the static world and the people walking through it.
-  const dyn = state.travelers
-    .filter((t) => t.x > b.x0 && t.x < b.x1 && t.y > b.y0 && t.y < b.y1)
-    .sort((a, c) => a.y - c.y);
+  // Depth-sorted merge of the static world and everything moving through it.
+  // Caravans are sorted by their lead position rather than per wagon: a train
+  // strung out along a road is one object as far as the player is concerned,
+  // and splitting it lets a building slot between two of its own wagons.
+  const inView = (o, pad = 0) => o.x > b.x0 - pad && o.x < b.x1 + pad
+    && o.y > b.y0 - pad && o.y < b.y1 + pad;
+  const dyn = [];
+  for (const c of state.caravans) if (inView(c, WAGON_GAP * 3)) dyn.push(c);
+  for (const p of state.residents) if (inView(p)) dyn.push(p);
+  dyn.sort((a, c) => a.y - c.y);
 
   let i = 0, j = 0;
   while (i < r.statics.length || j < dyn.length) {
@@ -345,7 +441,9 @@ export function drawScene(g, r, cam, state) {
       if (!q.building && trampled(state, q)) continue;
       drawStatic(g, r, cam, q);
     } else {
-      drawTraveler(g, r, cam, dyn[j++]);
+      const m = dyn[j++];
+      if (m.wagons) drawCaravan(g, r, cam, m);
+      else drawPerson(g, r, cam, m, m.id);
     }
   }
 
