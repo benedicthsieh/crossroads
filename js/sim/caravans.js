@@ -43,9 +43,24 @@ export const MAX_CARAVANS = 22;
  * same rate a few dozen individual travellers used to.
  */
 const WEAR_PER_UNIT = 0.015;
-const wearRate = (c) => WEAR_PER_UNIT * (1.4 + 0.6 * c.wagons);
+const wearRate = (c) => WEAR_PER_UNIT * (1.6 + 0.8 * c.wagons);
 
 const GOODS = ['wheat', 'bread', 'crate', 'basket', 'log'];
+
+/**
+ * How many wagons a caravan sets out with, weighted hard toward one.
+ *
+ * A lone wagon on a long road is the everyday sight this game is about; a train
+ * of three is what a founding party or a rich town's trade run looks like, and
+ * it reads as an event precisely because it is rare. `big` (0..1) is how much
+ * this particular departure leans toward the larger end.
+ */
+function rollWagons(rng, big) {
+  let n = 1;
+  if (rng.chance(0.16 + 0.34 * big)) n++;
+  if (n === 2 && rng.chance(0.08 + 0.22 * big)) n++;
+  return Math.min(MAX_WAGONS, n);
+}
 
 // ------------------------------------------------------------------- gates
 
@@ -142,7 +157,7 @@ export function frontierPressure(state) {
 const ROAM_RANGE = 3400;
 
 /** A caravan needs this many people aboard before it can start a town alone. */
-const FOUND_SOULS = 11;
+const FOUND_SOULS = 10;
 
 /** Everything a settlement offers, normalised to roughly 0..2. */
 function townDraw(state, town) {
@@ -286,8 +301,7 @@ export function spawnBorderCaravan(state) {
   // Early arrivals travel in bigger trains: they are the ones expected to found
   // something, and `FOUND_SOULS` is two wagons' worth.
   const bias = frontierPressure(state);
-  const wagons = 1 + (rng.chance(0.45 + 0.4 * bias) ? 1 : 0) + (rng.chance(0.18 + 0.3 * bias) ? 1 : 0);
-  const c = makeCaravan(state, gate.x, gate.y, Math.min(MAX_WAGONS, wagons), 'border');
+  const c = makeCaravan(state, gate.x, gate.y, rollWagons(rng, bias), 'border');
   retarget(state, c);
   return c;
 }
@@ -310,7 +324,7 @@ export function borderInterval(state, rng) {
 export function spawnTownCaravan(state, town) {
   if (state.caravans.length >= MAX_CARAVANS) return null;
   const rng = state.rng;
-  const wagons = Math.min(MAX_WAGONS, 1 + (rng.chance(0.4) ? 1 : 0) + (rng.chance(0.12) ? 1 : 0));
+  const wagons = rollWagons(rng, 0.45);
   const take = wagons * SOULS_PER_WAGON;
   if (town.pop - take < 6) return null;
   town.pop -= take;
@@ -337,7 +351,7 @@ export function spawnTradeCaravan(state, town) {
   const partners = state.towns.filter((t) => t.id !== town.id);
   if (!partners.length) return null;
 
-  const wagons = Math.min(MAX_WAGONS, 1 + (rng.chance(0.35) ? 1 : 0));
+  const wagons = rollWagons(rng, 0.15);
   const take = wagons * SOULS_PER_WAGON;
   if (town.pop - take < 8) return null;
   town.pop -= take;

@@ -15,7 +15,9 @@ import {
   makeCamera, resizeCamera, applyTransform, toWorld, clampCamera,
   ZOOM_STOPS, DEFAULT_STOP, bakeScaleFor, ZOOM_MIN, ZOOM_MAX, nearestStop,
 } from './render/camera.js';
-import { createRenderer, drawScene, tickSmoke, updateFx, updateRoadLayer } from './render/scene.js';
+import {
+  createRenderer, drawScene, tickSmoke, tickCaravans, updateFx, updateRoadLayer,
+} from './render/scene.js';
 
 const canvas = document.getElementById('view');
 const g = canvas.getContext('2d', { alpha: false });
@@ -122,6 +124,7 @@ function frame(now) {
     const slices = Math.min(8, Math.ceil(dt / 0.05));
     for (let i = 0; i < slices; i++) step(state, dt / slices);
     updateFx(raw);
+    tickCaravans(renderer, state, raw);
     tickSmoke(renderer, state, raw);
     renderer.consumeEvents(state);
     // The clock runs on wall time, not sim time. Tie it to `dt` and the whole

@@ -77,7 +77,15 @@ shareable between clients. If you find yourself wanting to stash a sprite, a
 walk-cycle frame or a canvas on a caravan, put it in the renderer keyed by
 `caravan.id` or `caravan.seed` instead. `caravanParts()` in `render/scene.js` is
 the model: the sim stores one position and a heading, and where each wagon and
-drover actually sits is derived from the seed at draw time.
+drover actually sits is derived at draw time.
+
+The renderer *does* keep a breadcrumb trail and a smoothed heading per caravan
+(`r.trails`, keyed by id, ticked by `tickCaravans`). That is the legitimate
+version of the same idea — render-only state, never serialised, rebuilt from
+scratch on load. It exists because the sim's raw heading is unusable for
+drawing: a caravan steers at tile centres, so its heading snaps between eight
+compass directions several times a second, and both the wagon sprite's
+view and the position of the tail wagons have to be smoothed out of it.
 
 **Determinism.** All sim randomness goes through `state.rng` (serialised) or
 `hash3` (stateless, coordinate-derived). Two clients restoring the same snapshot
@@ -184,9 +192,7 @@ poking at a running game from the console or from Playwright.
   priority-flood, so a few still end in a pond rather than reaching the edge.
 - Town buildings can overlap slightly; the spacing check is a squashed-circle
   distance, not the actual sprite footprint.
-- Caravans don't avoid each other, and the wagons in a train are laid out along
-  the caravan's *current* heading rather than along the path it actually walked.
-  Round a sharp corner the tail cuts across the bend.
+- Caravans don't avoid each other. At a busy town gate they overlap.
 - Residents wander between buildings; they don't have jobs. The demo's
   step-script behaviours (`demo/js/agents.js`) are the obvious thing to port
   when towns need an internal economy.

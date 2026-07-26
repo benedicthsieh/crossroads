@@ -63,6 +63,9 @@ export function createRenderer(state) {
     lights: [],
     shadowCache: new Map(),
     looks: new Map(),
+    // Breadcrumbs and smoothed heading per caravan id. Renderer-only: never
+    // serialised, never read by the sim. See the caravan section below.
+    trails: new Map(),
     smokeT: 0,
     follow: null,
   };
@@ -98,6 +101,7 @@ export function createRenderer(state) {
   r.rebuildWorld = (st) => {
     r.rebuildScenery(st);
     r.resort(st);
+    r.trails.clear();
     clearFx();
     r.follow = null;
   };
@@ -242,13 +246,33 @@ function viewOf(t) {
   return t.vy > 0 ? 'front' : 'back';
 }
 
+/**
+ * `viewOf` with hysteresis: it takes a clearer signal to *leave* the current
+ * view than to stay in it.
+ *
+ * Smoothing the heading gets rid of most of the sprite flicker, but a caravan
+ * travelling almost exactly diagonally sits right on the boundary between two
+ * views and will still trade back and forth across it. Widening the band you
+ * have to cross to switch fixes that without adding the lag that more
+ * smoothing would. A reversal along the *same* axis (side to left) is a real
+ * change of direction and is never held back.
+ */
+function steadyView(vx, vy, current) {
+  const ax = Math.abs(vx), ay = Math.abs(vy);
+  const horizontalNow = current === 'side' || current === 'left';
+  const bias = current ? (horizontalNow ? 1 / 1.4 : 1.4) : 1.15;
+  return ax > ay * bias ? (vx > 0 ? 'side' : 'left') : (vy > 0 ? 'front' : 'back');
+}
+
 function drawPerson(g, r, cam, t, id) {
   const look = r.lookFor(t);
   const moving = t.rest <= 0;
   const frame = moving
     ? Math.floor(t.walked / 3.2) % 4
     : (Math.floor(t.walked * 2.2) % 2 === 0 ? 0 : 2);
-  const spr = villagerFrame(look, viewOf(t), frame, t.carry, null);
+  // `t.view` is set for caravan drovers, which have a hysteresis-filtered view
+  // to share; residents just resolve their own from their heading.
+  const spr = villagerFrame(look, t.view || viewOf(t), frame, t.carry, null);
   const [sx, sy] = toScreen(cam, t.x, t.y);
   shadowFor(g, r, sx, sy, 8 * STYLE.scale);
   g.drawImage(spr.canvas, Math.round(sx - spr.ax), Math.round(sy - spr.ay));
@@ -270,34 +294,112 @@ function followRing(g, sx, sy, rx) {
 // ------------------------------------------------------------------ caravans
 //
 // A caravan is one object in the sim and several on screen: a wagon per five
-// souls, strung out along the road behind the lead, plus a couple of drovers
-// walking beside them. The sim never knows about any of that — it stores a
-// position and a heading, and the layout below is derived from the caravan's
-// seed, so it is stable across a save and identical on two clients.
-
-/** Gap between wagons in a train, in world units. */
-const WAGON_GAP = 30;
+// souls, strung out along the road behind the lead, plus a drover or two
+// walking beside them. The sim never knows about any of that — it stores one
+// position and one heading, and everything below is derived at draw time.
+//
+// Two things have to be smoothed out of the sim's heading before it is usable
+// for drawing, and both were badly visible before they were:
+//
+//   1. A caravan steers at successive *tile centres*, so its raw heading snaps
+//      between eight compass directions several times a second. Fed straight to
+//      `viewOf` that flips the wagon sprite between side, front and back on
+//      almost every frame — the "twitch".
+//   2. Tail wagons laid out along the *current* heading swing around the lead
+//      like a rigid arm every time it changes. A train should follow the ground
+//      the lead actually covered.
+//
+// Both are fixed with one piece of renderer-owned state: a breadcrumb trail per
+// caravan, keyed by id, holding recent positions and a smoothed heading. It is
+// never serialised and the sim cannot see it, which is exactly where this kind
+// of thing belongs.
 
 /**
- * Where each piece of a caravan sits, relative to the caravan's own position.
- * Returns world-space items with their own depth key so they sort correctly
- * against buildings and everybody else.
+ * Gap between wagons in a train, in world units. An ox and its wagon are about
+ * 42 units end to end, so anything much under this parks one team inside the
+ * tailgate of the wagon in front.
  */
-export function caravanParts(c) {
-  const view = viewOf(c);
-  const frame = Math.floor(c.walked / 5) % 2;
-  const variant = c.seed % 3;
-  // Heading, normalised. A stopped caravan keeps whatever it last had.
+const WAGON_GAP = 44;
+
+/** World units between recorded breadcrumbs, and how many to keep. */
+const TRAIL_STEP = 6;
+const TRAIL_POINTS = 26;
+
+/** Seconds-ish constant for heading smoothing. Higher = snappier. */
+const HEADING_LERP = 5;
+
+/** How far ahead along the trail a tail wagon looks to work out which way it faces. */
+const TAIL_BASELINE = 26;
+
+/**
+ * A trail for a caravan we have not seen before.
+ *
+ * Pre-filled with breadcrumbs running back along the current heading rather
+ * than started empty. An empty trail means `backAlong` has nothing to answer
+ * with for the first couple of seconds, the tail falls back to a straight line
+ * behind the lead, and then *snaps* onto the real path once enough crumbs
+ * exist — which is a lurch exactly where a caravan is most likely to be
+ * noticed, at the moment it appears.
+ */
+function makeTrail(c) {
   const len = Math.hypot(c.vx, c.vy) || 1;
   const hx = c.vx / len, hy = c.vy / len;
+  const pts = [];
+  for (let i = 0; i < TRAIL_POINTS; i++) {
+    pts.push({ x: c.x - hx * TRAIL_STEP * i, y: c.y - hy * TRAIL_STEP * i });
+  }
+  // `heads[i]` is wagon i's own smoothed heading. Index 0 is the lead's.
+  return { pts, hx, hy, heads: [] };
+}
+
+/**
+ * Walk `dist` world units back along a caravan's trail.
+ * Returns null while the trail is still shorter than that — a caravan that has
+ * only just spawned has nowhere to put its tail yet.
+ */
+function backAlong(trail, c, dist) {
+  if (!trail) return null;
+  let remaining = dist;
+  let px = c.x, py = c.y;
+  for (const p of trail.pts) {
+    const seg = Math.hypot(p.x - px, p.y - py);
+    if (seg >= remaining) {
+      const f = seg > 0 ? remaining / seg : 0;
+      return { x: px + (p.x - px) * f, y: py + (p.y - py) * f };
+    }
+    remaining -= seg;
+    px = p.x;
+    py = p.y;
+  }
+  return null;
+}
+
+/**
+ * Where each piece of a caravan sits. Returns world-space items with their own
+ * depth key so they sort correctly against buildings and everybody else.
+ */
+export function caravanParts(c, trail) {
+  const frame = Math.floor(c.walked / 5) % 2;
+  const variant = c.seed % 3;
+  const hx = trail ? trail.hx : c.vx;
+  const hy = trail ? trail.hy : c.vy;
   const parts = [];
 
   for (let i = 0; i < c.wagons; i++) {
+    const back = WAGON_GAP * i;
+    const at = i === 0
+      ? { x: c.x, y: c.y }
+      : backAlong(trail, c, back) || { x: c.x - hx * back, y: c.y - hy * back };
+    // Each wagon faces along the trail *where it is*, not where the lead is, so
+    // a train rounding a bend bends with it. The heading is the smoothed one
+    // kept by `tickCaravans`, not a direction read off two trail points.
+    const h = trail && trail.heads[i];
+    const view = (h && h.view) || viewOf({ vx: hx, vy: hy });
     parts.push({
       kind: 'wagon',
       name: `wagon${(variant + i) % 3}${view}${frame}`,
-      x: c.x - hx * WAGON_GAP * i,
-      y: c.y - hy * WAGON_GAP * i,
+      x: at.x,
+      y: at.y,
     });
   }
 
@@ -305,18 +407,22 @@ export function caravanParts(c) {
   // enough to say "people" — drawing all twenty-five souls is exactly the thing
   // this whole redesign exists to stop doing.
   const px = -hy, py = hx;                    // perpendicular to the heading
+  const leadView = (trail && trail.heads[0] && trail.heads[0].view)
+    || viewOf({ vx: hx, vy: hy });
   const walkers = Math.min(2, c.wagons);
   for (let i = 0; i < walkers; i++) {
     const side = i % 2 === 0 ? 1 : -1;
-    const back = WAGON_GAP * (i * (c.wagons - 1) + 0.35);
+    const back = WAGON_GAP * i * (c.wagons - 1) + 14;
+    const at = backAlong(trail, c, back) || { x: c.x - hx * back, y: c.y - hy * back };
     parts.push({
       kind: 'drover',
       seed: c.seed + i * 977,
       role: i === 0 ? 'peddler' : 'guard',
-      x: c.x - hx * back + px * side * 11,
-      y: c.y - hy * back + py * side * 11,
+      x: at.x + px * side * 12,
+      y: at.y + py * side * 12,
       vx: hx,
       vy: hy,
+      view: leadView,
       walked: c.walked + i * 7,
       rest: c.rest,
       carry: i === 0 ? c.carry : null,
@@ -329,7 +435,7 @@ function drawCaravan(g, r, cam, c) {
   // Sort within the train as well as between trains. A caravan heading *down*
   // the screen has its tail wagons further up and therefore behind it, and
   // drawing them in train order would lay the back of the queue over the front.
-  const parts = caravanParts(c).sort((a, b) => a.y - b.y);
+  const parts = caravanParts(c, r.trails.get(c.id)).sort((a, b) => a.y - b.y);
   for (const part of parts) {
     if (part.kind === 'wagon') drawProp(g, r, cam, part.name, part.x, part.y);
     else drawPerson(g, r, cam, part, null);
@@ -390,6 +496,79 @@ function drawNight(g, r, cam) {
     g.fillRect(sx - rad, sy - rad, rad * 2, rad * 2);
   }
   g.globalCompositeOperation = 'source-over';
+}
+
+/**
+ * Advance every caravan's breadcrumb trail and smoothed heading.
+ *
+ * Runs on wall-clock `dt` alongside the other renderer ticks, and only while
+ * the game is running — a paused caravan should not keep laying breadcrumbs
+ * from a position it is no longer leaving.
+ */
+export function tickCaravans(r, state, dt) {
+  const live = new Set();
+  const k = Math.min(1, dt * HEADING_LERP);
+
+  for (const c of state.caravans) {
+    live.add(c.id);
+    let t = r.trails.get(c.id);
+    if (!t) { t = makeTrail(c); r.trails.set(c.id, t); }
+
+    const len = Math.hypot(c.vx, c.vy);
+    if (len > 0) {
+      t.hx += (c.vx / len - t.hx) * k;
+      t.hy += (c.vy / len - t.hy) * k;
+      const n = Math.hypot(t.hx, t.hy);
+      if (n > 0.0001) { t.hx /= n; t.hy /= n; }
+    }
+
+    const head = t.pts[0];
+    const dx = c.x - head.x, dy = c.y - head.y;
+    const gone = Math.hypot(dx, dy);
+
+    // Doubling back invalidates the trail. A caravan turned away from a full
+    // town retraces its own steps, and the tail would then be laid out along
+    // ground the caravan is about to walk over — wagons drawn *in front* of the
+    // team pulling them. Start the trail again from here.
+    if (len > 0 && gone > 2 && (dx * c.vx + dy * c.vy) / (gone * len) < -0.3) {
+      r.trails.set(c.id, makeTrail(c));
+      continue;
+    }
+
+    if (gone >= TRAIL_STEP) {
+      t.pts.unshift({ x: c.x, y: c.y });
+      if (t.pts.length > TRAIL_POINTS) t.pts.length = TRAIL_POINTS;
+    }
+
+    // Each wagon's own heading, smoothed on the same clock as the lead's. The
+    // trail records where the caravan actually walked, and where it actually
+    // walked zigzags — it steers at tile centres — so a direction read straight
+    // off two trail points is as jittery as the raw sim heading was.
+    const lead = t.heads[0] || (t.heads[0] = {});
+    lead.hx = t.hx;
+    lead.hy = t.hy;
+    lead.view = steadyView(t.hx, t.hy, lead.view);
+
+    for (let i = 1; i < c.wagons; i++) {
+      const back = WAGON_GAP * i;
+      const at = backAlong(t, c, back);
+      const ahead = backAlong(t, c, back - TAIL_BASELINE);
+      if (!at || !ahead) continue;
+      const dx = ahead.x - at.x, dy = ahead.y - at.y;
+      const n = Math.hypot(dx, dy);
+      if (n < 0.001) continue;
+      const want = { hx: dx / n, hy: dy / n };
+      const w = t.heads[i] || (t.heads[i] = { ...want });
+      w.hx += (want.hx - w.hx) * k;
+      w.hy += (want.hy - w.hy) * k;
+      const m = Math.hypot(w.hx, w.hy);
+      if (m > 0.0001) { w.hx /= m; w.hy /= m; }
+      w.view = steadyView(w.hx, w.hy, w.view);
+    }
+  }
+
+  // Caravans that have settled or left the map take their trail with them.
+  for (const id of r.trails.keys()) if (!live.has(id)) r.trails.delete(id);
 }
 
 /** Chimneys puff. Purely decorative, and it does a lot for "inhabited". */

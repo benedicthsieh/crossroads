@@ -37,9 +37,12 @@ from caravans and towns.
 ## 1. The caravan's objective function
 
 A caravan is a wagon train — one pathing entity, five people per wagon, up to
-three wagons. When it finishes a leg it scores every option it has and takes the
-best one. All three kinds of option are scored in the same made-up units so they
-can be compared directly (`chooseGoal`).
+three wagons. Most are a *single* wagon: `rollWagons` is weighted hard toward
+one, so a lone wagon on a long road is the everyday sight and a train of three
+reads as an event, which is what a founding party or a rich town's trade run
+should look like. When a caravan finishes a leg it scores every option it has
+and takes the best one. All three kinds of option are scored in the same
+made-up units so they can be compared directly (`chooseGoal`).
 
 **Join an existing town.**
 
@@ -60,8 +63,9 @@ forever.
   +  frontier pressure × 2.8  −  distance × 1.55  −  1.95
 ```
 
-Only caravans carrying eleven or more souls may consider this — a single wagon
-that stops in the middle of nowhere is just lost. `arms` is how many distinct
+Only caravans carrying ten or more souls may consider this — two wagons, so a
+single wagon that stops in the middle of nowhere is just lost rather than the
+founder of anything. `arms` is how many distinct
 roads meet at the junction, `wear` is how well trodden it already is, `room` is
 how far it is from the nearest existing town. The flat −1.95 is the cost of
 starting from nothing, and it is what stops hamlets sprouting at every fork.
@@ -224,9 +228,12 @@ The caravan decisions sit on top of the original mechanic, which has not changed
 3. Cheaper ground attracts the next caravan.
 4. Wear decays with a 900-second half-life, so a route nobody uses fades.
 
-Wagons are heavier than the walkers they replaced — `1.4 + 0.6 × wagons` times
+Wagons are heavier than the walkers they replaced — `1.6 + 0.8 × wagons` times
 the base rate — which is why a dozen caravans can wear in a network that used to
-take fifty individual travellers.
+take fifty individual travellers. The weighting is front-loaded rather than
+proportional because most caravans are one wagon: a lone wagon still has to lay
+down enough of a rut to matter, or a map of mostly-single wagons would never
+grow a road at all.
 
 Terrain exists purely to make step 1 non-uniform. If every tile cost the same,
 traffic would spread evenly and no road would ever form. Rivers and mountain
