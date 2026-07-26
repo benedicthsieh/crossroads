@@ -21,6 +21,30 @@ python3 -m http.server 8000
 
 Any static server works — `npx serve`, `caddy file-server`, whatever you have.
 
+## Put it online (GitHub Pages)
+
+There's nothing to build, and every path in the project is relative, so the
+repo can be served as-is — including from a project subpath like
+`https://<user>.github.io/crossroads/`.
+
+**Settings → Pages → Source: "Deploy from a branch" → Branch: this branch,
+Folder: `/ (root)` → Save.**
+
+The demo lands at `/` and the sprite sheet at `/sprites.html`. The empty
+`.nojekyll` file at the repo root tells Pages to publish the files verbatim
+instead of running them through Jekyll first.
+
+Two things to know before you flip it on:
+
+- **Pages needs a public repo on the GitHub Free plan.** For a private repo you
+  need Pro, Team or Enterprise Cloud.
+- **The published site is public either way.** Making a private repo's Pages
+  site private requires Enterprise Cloud, so on any other plan, publishing puts
+  the demo on the open web even though the code stays private.
+
+A GitHub Actions workflow is the other route, and worth switching to if this
+ever grows a build step. It buys nothing today.
+
 ## What you're looking at
 
 Everyone on the map is running an errand, and goods and coin actually change
