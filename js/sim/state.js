@@ -27,6 +27,13 @@ export { WORLD, MAP, TILE };
 /** How full a town has to be before its surplus starts leaving as caravans. */
 const EMIGRATE_FULL = 0.72;
 
+/**
+ * How worn a junction must be before anyone will consider settling it.
+ * Together with the wear rate in caravans.js this is what paces the whole
+ * game: it is the gap between "there is a track here" and "this is a place".
+ */
+const FOUND_WEAR = 0.95;
+
 export function createState(seed = (Math.random() * 1e9) | 0) {
   const s = seed >>> 0 || 1;
   const terrain = generateTerrain(s);
@@ -96,7 +103,7 @@ export function step(state, dt) {
   tm.frontier -= dt;
   if (tm.frontier <= 0) {
     tm.frontier = 6;
-    state.frontier = bestJunction(state, 3, 0.95, TOWN_SPACING);
+    state.frontier = bestJunction(state, 3, FOUND_WEAR, TOWN_SPACING);
     state.stats.roadTiles = countRoads(state);
   }
 
@@ -141,7 +148,7 @@ function considerTrade(state, town) {
   if (town.buildings.length < 4) return;
   if (population(town) < 25) return;
   // Busier towns trade more, so a trunk-road town visibly out-trades a quiet one.
-  const rate = 0.012 + 0.0016 * Math.min(12, town.buildings.length);
+  const rate = 0.010 + 0.0012 * Math.min(12, town.buildings.length);
   if (state.rng.chance(rate)) spawnTradeCaravan(state, town);
 }
 

@@ -21,8 +21,12 @@ different scales.
 | Actor | Lives in | Decides | How often |
 | --- | --- | --- | --- |
 | **Caravan** | `js/sim/caravans.js` | Where to go next, and whether to stop for good | Once per leg |
-| **Town** | `js/sim/towns.js` | What to build next, and when to send people away | Once a second |
+| **Town** | `js/sim/towns.js` | What to build next; when to send people away, and whether they come back | Once a second |
 | **Resident** | `js/sim/residents.js` | Which building to walk to | Once per errand |
+
+A caravan that has a `home` is on a trade circuit and does not re-decide — a
+merchant's round is not an existential choice. Everything else scores its
+options every time it arrives somewhere.
 
 Residents are the least interesting on purpose: they exist so a town looks
 inhabited, and they deliberately lay down no wear. Everything structural comes
@@ -96,8 +100,14 @@ one that exists.
 
 Without it, a long game slowly grows a village at every junction, because
 junctions keep appearing as the road network thickens. With it, the map lands on
-four or five towns and then stops, and the same seed lands on roughly the same
-number every time.
+four or five towns inside the first couple of minutes at 16× and then *stops*,
+which is the behaviour that matters — the count converges, and the same seed
+lands on roughly the same number every time.
+
+The pace is deliberately brisk. Slowing it down is a matter of raising
+`FOUND_WEAR` in `state.js` (how worn a junction must be before anyone will
+consider it) or shortening `FRONTIER_HALFLIFE`; neither changes where the run
+ends up, only how long it takes to get there.
 
 `MAX_TOWNS` still exists as a hard cap, but on a normal run the pressure curve
 gets there first — which is the point. A cap that never binds is a cap that
@@ -107,16 +117,30 @@ isn't doing the design work.
 
 ## 3. Where traffic comes from, and how that changes
 
-Two sources, and the balance between them inverts over a session.
+Three sources, and the balance between them inverts over a session.
 
 **Borders.** `borderInterval` grows as `1 + (time / 900)^1.35`. At the start a
 caravan arrives every ten to twenty seconds; an hour in, it is minutes between
 them. These are the caravans that have never seen the map, so they are the ones
 that carve routes across virgin ground.
 
-**Towns.** `considerEmigration` fires for any town whose beds are more than 72%
-full and which has at least three buildings. It takes a wagon-load of people off
-`town.pop` and puts them on the road.
+**Emigration.** `considerEmigration` fires for any town whose beds are more than
+72% full and which has at least three buildings. It takes a wagon-load of people
+off `town.pop` for good and puts them on the road. This is the demographic
+pressure valve, and it is the one that founds and fills other towns.
+
+**Trade circuits.** `considerTrade` sends one or two wagons to the nearest
+towns and home again. The people come *back*, so the run costs the town nothing
+permanent.
+
+That last distinction is doing more work than it looks. Emigration is capped by
+how fast a town grows — about a caravan every couple of minutes, no matter how
+prosperous the place is — because you cannot export people you do not have. The
+first version of this had no trade circuits, and the late-game map emptied out:
+four towns, two wagons on the road between them, and roads visibly decaying
+because nothing was using them. Trade runs are limited only by how much there is
+to trade with, so a busy town visibly out-trades a quiet one and the roads
+between settlements stay alive.
 
 The inversion matters because it changes the *shape* of the network. Border
 traffic runs edge-to-edge and produces long straight corridors. Town traffic runs
@@ -232,6 +256,7 @@ decide what they look like.
 | `sim/caravans.js` | `BORDER_BASE`, the slack curve | how fast immigration tapers |
 | `sim/towns.js` | `TOWN_SPACING` | how far apart settlements must be |
 | `sim/towns.js` | `HOUSE_BEDS`, `EMIGRATE_FULL` | how much population a town holds before it exports |
+| `sim/state.js` | the rate in `considerTrade` | how busy the roads between towns look |
 | `sim/towns.js` | `FOOTPRINT`, the `findPlot` radius | how much a town sprawls |
 | `props.js` | `UNIT.building` | how much ground a building sprite covers |
 | `sim/roads.js` | `WEAR_FULL`, `DECAY_HALFLIFE` | how fast roads form and how long they last |

@@ -61,7 +61,10 @@ function setZoom(zoom, anchorCssX, anchorCssY) {
   let anchorWorld = null;
   if (anchorCssX != null) anchorWorld = screenToWorld(anchorCssX, anchorCssY);
 
-  const bake = bakeScaleFor(next);
+  // Passing the current scale is what arms the hysteresis — without it a pinch
+  // that settles on a bracket boundary re-bakes every sprite and repaints the
+  // whole road layer several times a second.
+  const bake = bakeScaleFor(next, STYLE.scale);
   const rebake = bake !== STYLE.scale;
   STYLE.zoom = next;
   STYLE.scale = bake;

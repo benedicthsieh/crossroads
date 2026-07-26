@@ -138,8 +138,10 @@ leverage:
 | `sim/towns.js` | `FOOTPRINT`, the `findPlot` radius | how much a town sprawls |
 | `props.js` | `UNIT.building` | how much ground a building sprite covers |
 
-Current tuning lands 4–5 towns in roughly 4–5 real minutes at 16×, on a
-420×280-tile map.
+Current tuning lands 4–5 towns inside the first two real minutes at 16× on a
+420×280-tile map, and then holds there — the count is the target, the pace is
+deliberately brisk so a session has something to look at early. `FRONTIER_HALFLIFE`
+and `FOUND_WEAR` (in state.js) are the two dials for stretching it out.
 
 ## Running and testing
 

@@ -154,10 +154,21 @@ export function createRenderer(state) {
     }
   };
 
+  // Every distinct (role, seed) pair bakes its own set of walk frames, and both
+  // caravans and residents churn — a long session gets through hundreds of them,
+  // none of which the caches would ever have dropped. Flushing wholesale when
+  // the population of *looks* gets large is blunt, but it is one hitch every few
+  // thousand people rather than a canvas cache that grows until the tab dies.
+  const LOOK_BUDGET = 220;
+
   r.lookFor = (t) => {
     const key = `${t.role}:${t.seed}`;
     let look = r.looks.get(key);
     if (!look) {
+      if (r.looks.size >= LOOK_BUDGET) {
+        r.looks.clear();
+        clearSpriteCache();
+      }
       look = roleLook(t.role, t.seed);
       look.key = key;
       r.looks.set(key, look);
@@ -315,7 +326,11 @@ export function caravanParts(c) {
 }
 
 function drawCaravan(g, r, cam, c) {
-  for (const part of caravanParts(c)) {
+  // Sort within the train as well as between trains. A caravan heading *down*
+  // the screen has its tail wagons further up and therefore behind it, and
+  // drawing them in train order would lay the back of the queue over the front.
+  const parts = caravanParts(c).sort((a, b) => a.y - b.y);
+  for (const part of parts) {
     if (part.kind === 'wagon') drawProp(g, r, cam, part.name, part.x, part.y);
     else drawPerson(g, r, cam, part, null);
   }

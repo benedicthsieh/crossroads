@@ -29,8 +29,13 @@ export const MAX_WAGONS = 3;
  * How many caravans may be on the road at once. Small on purpose — this is the
  * number that decides how busy the map *looks*, and a dozen wagon trains on a
  * 420x280 map is a trade route, not a crowd.
+ *
+ * Set a little above the steady state the spawn rates actually produce. When
+ * this cap binds it stops being a safety limit and starts being policy: border
+ * arrivals and emigrants both bail out at it, so a map saturated with trade
+ * runs would quietly stop founding and filling towns altogether.
  */
-export const MAX_CARAVANS = 18;
+export const MAX_CARAVANS = 22;
 
 /**
  * Wear laid down per world unit, per wagon. A loaded wagon cuts ruts a walker
@@ -106,6 +111,8 @@ const W = {
   room: 1.20,
   /** Flat cost of founding anything at all. Keeps hamlets from sprouting. */
   founding: 2.35,
+  /** How much the world's remaining appetite for settlement is worth. */
+  frontier: 2.4,
   /** How much a caravan enjoys simply being on the road, before it tires. */
   wanderlust: 2.05,
 };
@@ -182,7 +189,7 @@ export function chooseGoal(state, c) {
       const score = (spot.arms - 2) * W.arms
         + Math.min(1.5, spot.wear) * W.wear
         + room * W.room
-        + frontierPressure(state) * 2.4
+        + frontierPressure(state) * W.frontier
         - legCost(here, spot) * W.distance
         - W.founding
         + rng.range(-0.3, 0.3);
