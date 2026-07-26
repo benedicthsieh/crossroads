@@ -158,12 +158,20 @@ town gets founded on.
 smithy, and so on. But `nextBuild` checks beds first:
 
 ```js
-if (housing(town) - population(town) < 4) return 'house';
+if (free < 4 && houses <= trades + 1) return 'house';
 ```
 
 A town that is filling up builds a house even when the plan says it is due a
 smithy. Houses are also much cheaper than trades (`6 + n × 1.6` against
 `10 + n × 4.5`), so a town can always shelter the people who already live there.
+
+The `houses <= trades + 1` half of that is not decoration. Without it a town on
+a busy road becomes a housing estate with a well in the middle — caravans keep
+arriving, beds keep running short, and the build plan never gets a look in. The
+first version had no cap and produced towns of thirteen buildings, eleven of
+them houses. Capping homes against trades means a town that wants to grow has to
+build something worth visiting first, and a town that cannot afford to simply
+stops growing, which is a perfectly good outcome.
 
 The visible consequence is that a settlement's shape reflects its history. A
 town on a quiet spur stays a tidy little market. A town on the trunk road grows
