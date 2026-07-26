@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Crossroads — sprite sheet</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ctext y=%2713%27 font-size=%2713%27%3E%F0%9F%9B%A4%3C/text%3E%3C/svg%3E" />
+<style>
+  body {
+    margin: 0; padding: 24px 28px 60px;
+    background: #6ea84c;
+    color: #241c16;
+    font: 13px ui-monospace, monospace;
+  }
+  h1 { margin: 0 0 4px; font-size: 16px; }
+  p.note { margin: 0 0 18px; color: #2f3a24; }
+  .bar { display: flex; gap: 14px; align-items: center; margin-bottom: 20px; flex-wrap: wrap;
+         background: rgba(255,255,255,.5); padding: 8px 12px; border-radius: 8px; }
+  h2 { margin: 22px 0 8px; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; }
+  .grid { display: flex; flex-wrap: wrap; gap: 10px; }
+  .cell { background: rgba(255,255,255,.22); border-radius: 6px; padding: 6px 6px 3px; text-align: center; }
+  .cell canvas { display: block; image-rendering: pixelated; }
+  .cell span { font-size: 10px; opacity: .75; }
+  select, input { font: inherit; }
+</style>
+</head>
+<body>
+<h1>Crossroads sprite sheet</h1>
+<p class="note">Every frame the game can draw, at 8&times; on a grass-coloured field. Dev page for art-directing the cast.</p>
+<div class="bar">
+  <label>palette <select id="pal"></select></label>
+  <label>outline <select id="out">
+    <option value="selout">soft</option><option value="hard">hard</option><option value="off">none</option>
+  </select></label>
+  <label>rim <input type="range" id="rim" min="0" max="45" value="20" /></label>
+  <label>bg <input type="color" id="bg" value="#6ea84c" /></label>
+</div>
+<div id="root"></div>
+<script type="module">
+import { STYLE, PALETTES, pal } from './js/palette.js';
+import { villagerFrame, chickenFrame, dogFrame, iconSprite, clearSpriteCache, ROLES } from './js/sprites.js';
+import { prop, clearPropCache } from './js/props.js';
+
+const root = document.getElementById('root');
+const VIEWS = ['front', 'side', 'left', 'back'];
+const ITEMS = [null, 'wheat', 'bread', 'basket', 'water', 'crate', 'coins'];
+const PROPS = ['inn', 'bakery', 'house0', 'house1', 'house2', 'stall0back', 'stall0front',
+  'stall1back', 'stall1front', 'stall2back', 'stall2front', 'well', 'cart', 'signpost', 'lamp',
+  'barrel', 'crate', 'haystack', 'tree0', 'tree1', 'tree2', 'bush0', 'bush1', 'bush2', 'fenceH', 'fenceV',
+  'wheat0', 'wheat1', 'flowers0', 'flowers1'];
+const ICONS = ['coin', 'wheat', 'bread', 'water', 'heart', 'chat', 'spark'];
+
+function section(title) {
+  const h = document.createElement('h2');
+  h.textContent = title;
+  const d = document.createElement('div');
+  d.className = 'grid';
+  root.append(h, d);
+  return d;
+}
+
+function cell(parent, canvas, caption) {
+  const c = document.createElement('div');
+  c.className = 'cell';
+  const holder = document.createElement('canvas');
+  holder.width = canvas.width;
+  holder.height = canvas.height;
+  holder.getContext('2d').drawImage(canvas, 0, 0);
+  const s = document.createElement('span');
+  s.textContent = caption;
+  c.append(holder, s);
+  parent.append(c);
+}
+
+function build() {
+  root.textContent = '';
+  STYLE.scale = 8;
+  clearSpriteCache();
+  clearPropCache();
+
+  for (const role of Object.keys(ROLES)) {
+    const g = section(`${role} — walk cycle`);
+    for (const view of VIEWS) {
+      for (let f = 0; f < 4; f++) {
+        const look = { ...lookFor(role) };
+        cell(g, villagerFrame(look, view, f).canvas, `${view} ${f}`);
+      }
+    }
+  }
+
+  const carry = section('carrying / tools');
+  for (const item of ITEMS) {
+    const look = lookFor('villager');
+    cell(carry, villagerFrame(look, 'front', 0, item).canvas, item || 'empty');
+    cell(carry, villagerFrame(look, 'side', 1, item).canvas, `${item || 'empty'} side`);
+  }
+  for (const tool of ['scythe', 'spear', 'broom']) {
+    cell(carry, villagerFrame(lookFor('farmer'), 'side', 0, null, tool).canvas, tool);
+  }
+
+  const crit = section('critters');
+  for (let f = 0; f < 3; f++) cell(crit, chickenFrame(f, false).canvas, `chicken ${f}`);
+  cell(crit, chickenFrame(0, true).canvas, 'chicken flip');
+  for (let f = 0; f < 2; f++) cell(crit, dogFrame(f, false).canvas, `dog ${f}`);
+
+  const ic = section('icons');
+  for (const n of ICONS) cell(ic, iconSprite(n, 8).canvas, n);
+
+  const pr = section('props');
+  for (const n of PROPS) {
+    try { cell(pr, prop(n).canvas, n); } catch (e) { /* prop may not exist yet */ }
+  }
+}
+
+const looks = new Map();
+function lookFor(role) {
+  const key = `${role}|${STYLE.palette}`;
+  if (!looks.has(key)) {
+    const { roleLook } = window.__sprites;
+    const l = roleLook(role, role.length * 7 + 3);
+    l.key = key;
+    looks.set(key, l);
+  }
+  return looks.get(key);
+}
+
+import * as spritesMod from './js/sprites.js';
+window.__sprites = spritesMod;
+
+const palSel = document.getElementById('pal');
+for (const [k, v] of Object.entries(PALETTES)) {
+  const o = document.createElement('option');
+  o.value = k; o.textContent = v.name;
+  palSel.append(o);
+}
+palSel.value = STYLE.palette;
+palSel.onchange = () => { STYLE.palette = palSel.value; looks.clear(); build(); };
+const out = document.getElementById('out');
+out.value = STYLE.outline;
+out.onchange = () => { STYLE.outline = out.value; build(); };
+const rim = document.getElementById('rim');
+rim.oninput = () => { STYLE.rim = +rim.value / 100; build(); };
+const bg = document.getElementById('bg');
+bg.oninput = () => { document.body.style.background = bg.value; };
+document.body.style.background = pal().grass[0];
+bg.value = pal().grass[0];
+
+build();
+</script>
+</body>
+</html>

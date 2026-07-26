@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Crossroads — art style test</title>
+<link rel="stylesheet" href="styles.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ctext y=%2713%27 font-size=%2713%27%3E%F0%9F%9B%A4%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="view"></canvas>
+    <div id="hint">drag to pan · scroll to zoom · click a villager to follow · space to pause</div>
+  </div>
+
+  <aside id="panel">
+    <header>
+      <h1>Crossroads</h1>
+      <p class="sub">Art-style test — travellers and villagers doing business at a market crossroads.</p>
+    </header>
+
+    <section>
+      <h2>Look</h2>
+      <label class="row">
+        <span>Palette</span>
+        <select id="palette"></select>
+      </label>
+      <label class="row">
+        <span>Pixel size</span>
+        <input type="range" id="scale" min="2" max="6" step="1" />
+        <output id="scaleVal">3×</output>
+      </label>
+      <label class="row">
+        <span>Outline</span>
+        <select id="outline">
+          <option value="selout">Soft (tinted)</option>
+          <option value="hard">Hard (inked)</option>
+          <option value="off">None</option>
+        </select>
+      </label>
+      <label class="row">
+        <span>Rim light</span>
+        <input type="range" id="rim" min="0" max="45" step="1" />
+        <output id="rimVal">20%</output>
+      </label>
+      <label class="row">
+        <span>Shadows</span>
+        <select id="shadow">
+          <option value="soft">Soft</option>
+          <option value="hard">Hard</option>
+          <option value="off">None</option>
+        </select>
+      </label>
+    </section>
+
+    <section>
+      <h2>Scene</h2>
+      <label class="row">
+        <span>Sim speed</span>
+        <select id="speed">
+          <option value="0.5">0.5×</option>
+          <option value="1">1×</option>
+          <option value="2">2×</option>
+          <option value="4">4×</option>
+        </select>
+      </label>
+      <label class="row">
+        <span>Time of day</span>
+        <input type="range" id="time" min="0" max="100" step="1" />
+      </label>
+      <label class="check"><input type="checkbox" id="cycle" /> <span>Day / night cycle</span></label>
+      <label class="check"><input type="checkbox" id="labels" /> <span>Show names</span></label>
+      <div class="buttons">
+        <button id="pause">❚❚ Pause</button>
+        <button id="traveler">+ Traveller</button>
+        <button id="reset">Reset</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Trade log</h2>
+      <dl class="stats">
+        <dt>Transactions</dt><dd id="statTrades">0</dd>
+        <dt>Goods moved</dt><dd id="statGoods">0</dd>
+        <dt>Coins changed</dt><dd id="statCoins">0</dd>
+        <dt>Travellers seen</dt><dd id="statTravelers">0</dd>
+        <dt>On the map</dt><dd id="statPop">0</dd>
+        <dt>FPS</dt><dd id="statFps">0</dd>
+      </dl>
+    </section>
+
+    <section id="card" hidden>
+      <h2>Following</h2>
+      <p class="cardline"><strong id="cardName">—</strong> <em id="cardRole"></em></p>
+      <p class="cardline" id="cardItem"></p>
+      <p class="tiny">Press Esc or drag the map to stop following.</p>
+    </section>
+
+    <section>
+      <h2>What's happening</h2>
+      <ul class="legend">
+        <li><b>Farmers</b> cut wheat in the fields and haul it to the produce stall for coin.</li>
+        <li><b>The baker</b> buys grain at the stall, bakes at the shop (watch the chimney), then sells bread.</li>
+        <li><b>Villagers</b> fetch water from the well and shop for bread.</li>
+        <li><b>Travellers</b> arrive on the roads, trade in the square, rest at the inn, and leave by another road.</li>
+      </ul>
+      <p class="tiny">Every sprite is generated in code as pixel art at runtime — no image files. The
+      look controls above re-bake the whole town, which makes this a fast way to judge a style.</p>
+    </section>
+  </aside>
+</div>
+<script type="module" src="js/game.js"></script>
+</body>
+</html>
