@@ -378,6 +378,15 @@ const ITEMS = {
     px.shadeOver(x + 2, y - 1, 2, 5, p.woodDark);
     px.fill(x - 2, y + 1, 6, 1, p.woodDark);
   },
+  log: (px, p, x, y) => {
+    // Two log ends stacked, pale end-grain against dark bark.
+    const bark = darken(p.trunk, 0.1);
+    px.fill(x - 2, y, 6, 2, bark);
+    px.fill(x - 1, y + 2, 5, 2, bark);
+    px.set(x - 1, y, mix(p.woodLight, p.wheat, 0.4));
+    px.set(x + 2, y, mix(p.woodLight, p.wheat, 0.2));
+    px.set(x, y + 2, mix(p.woodLight, p.wheat, 0.35));
+  },
   coins: (px, p, x, y) => {
     px.fill(x - 2, y, 5, 4, '#8a6a4a');
     px.shadeOver(x + 1, y, 2, 4, '#5f452c');
@@ -403,6 +412,10 @@ function drawTool(px, look, view, m, tool) {
     px.line(CX + 4, torsoY - 6, CX + 4, torsoY + 7, p.wood);
     px.fill(CX + 3, torsoY - 8, 3, 2, p.stone);
     px.set(CX + 4, torsoY - 9, p.stone);
+  } else if (tool === 'axe') {
+    px.line(CX + 4, torsoY - 2, CX + 4, torsoY + 6, p.wood);
+    px.fill(CX + 3, torsoY - 4, 4, 2, p.stone);
+    px.set(CX + 6, torsoY - 2, p.stoneDark);
   } else if (tool === 'broom') {
     px.line(CX + 4, torsoY - 2, CX + 4, torsoY + 5, p.woodLight);
     px.fill(CX + 3, torsoY + 5, 3, 3, p.wheatDark);
@@ -487,6 +500,12 @@ export function iconSprite(name, scale = STYLE.scale) {
       px.set(2, 4, p.wheat); px.set(6, 4, p.wheatDark);
       break;
     case 'bread': ITEMS.bread(px, p, 4, 3); break;
+    case 'log':
+      px.fill(1, 3, 7, 4, darken(p.trunk, 0.1));
+      px.disc(2, 5, 1.6, mix(p.woodLight, p.wheat, 0.4));
+      px.set(2, 5, darken(p.trunk, 0.2));
+      px.shadeOver(1, 6, 7, 1, darken(p.trunk, 0.3));
+      break;
     case 'basket':
       px.fill(2, 2, 1, 1, p.wood);                   // handle
       px.fill(4, 1, 1, 1, p.wood);

@@ -323,6 +323,54 @@ export function buildCast() {
     }));
   });
 
+  // --- woodcutter: fells timber in the west woods, hauls it to the yard ------
+  cast.push(new Actor({
+    role: 'villager', seed: 900, name: 'Gus', speed: rand(16, 13),
+    x: POI.woods.x, y: POI.woods.y,
+    script: [
+      { go: () => ({ x: POI.woods.x + rand(40, -20), y: POI.woods.y + rand(50, -40) }) },
+      { wait: () => rand(4, 2.6), tool: 'axe', say: 'log' },
+      { take: 'log' },
+      { go: POI.lumberyardDrop, tol: 6 },
+      { face: 'back' },
+      { trade: { give: 'log', get: 'coin' } },
+      { take: null },
+      { wait: () => rand(2, 0.8) },
+    ],
+  }));
+
+  // --- porter: warehouse to market hall, all day ---------------------------
+  cast.push(new Actor({
+    role: 'villager', seed: 901, name: 'Dov', speed: rand(18, 15),
+    x: POI.warehouseDoor.x, y: POI.warehouseDoor.y,
+    script: [
+      { go: POI.warehouseDoor, tol: 5 },
+      { wait: () => rand(2.6, 1.4), view: 'back', say: 'crate' },
+      { take: 'crate' },
+      { go: POI.marketHall, tol: 7 },
+      { face: 'back' },
+      { trade: { give: 'crate', get: 'coin' } },
+      { take: null },
+      { wait: () => rand(2, 1) },
+    ],
+  }));
+
+  // --- smith: works the forge, walks goods up to the square ----------------
+  cast.push(new Actor({
+    role: 'guard', seed: 902, name: 'Idris', speed: 15,
+    x: POI.smithyDoor.x, y: POI.smithyDoor.y,
+    script: [
+      { go: POI.smithyDoor, tol: 5 },
+      { wait: () => rand(5, 3), view: 'back', say: 'spark' },
+      { take: 'crate' },
+      { go: POI.stallA, tol: 7 },
+      { face: 'back' },
+      { trade: { give: 'crate', get: 'coin', with: 'merchant' } },
+      { take: null },
+      { wait: () => rand(2.5, 1) },
+    ],
+  }));
+
   // --- kids and a guard: pure flavour, but they sell the "living town" read -
   for (let i = 0; i < 2; i++) {
     cast.push(new Actor({

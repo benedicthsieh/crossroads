@@ -42,12 +42,13 @@ import { prop, clearPropCache } from './js/props.js';
 
 const root = document.getElementById('root');
 const VIEWS = ['front', 'side', 'left', 'back'];
-const ITEMS = [null, 'wheat', 'bread', 'basket', 'water', 'crate', 'coins'];
-const PROPS = ['inn', 'bakery', 'house0', 'house1', 'house2', 'stall0back', 'stall0front',
+const ITEMS = [null, 'wheat', 'bread', 'basket', 'water', 'crate', 'log', 'coins'];
+const PROPS = ['marketplace', 'warehouse', 'lumberyard', 'smithy',
+  'inn', 'bakery', 'house0', 'house1', 'house2', 'stall0back', 'stall0front',
   'stall1back', 'stall1front', 'stall2back', 'stall2front', 'well', 'cart', 'signpost', 'lamp',
   'barrel', 'crate', 'haystack', 'tree0', 'tree1', 'tree2', 'bush0', 'bush1', 'bush2', 'fenceH', 'fenceV',
   'wheat0', 'wheat1', 'flowers0', 'flowers1'];
-const ICONS = ['coin', 'wheat', 'bread', 'water', 'heart', 'chat', 'spark'];
+const ICONS = ['coin', 'wheat', 'bread', 'water', 'heart', 'chat', 'spark', 'log'];
 
 function section(title) {
   const h = document.createElement('h2');
@@ -93,7 +94,7 @@ function build() {
     cell(carry, villagerFrame(look, 'front', 0, item).canvas, item || 'empty');
     cell(carry, villagerFrame(look, 'side', 1, item).canvas, `${item || 'empty'} side`);
   }
-  for (const tool of ['scythe', 'spear', 'broom']) {
+  for (const tool of ['scythe', 'spear', 'axe', 'broom']) {
     cell(carry, villagerFrame(lookFor('farmer'), 'side', 0, null, tool).canvas, tool);
   }
 

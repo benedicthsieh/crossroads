@@ -26,11 +26,17 @@ export const PLAZA = { x: 300, y: 212, w: 152, h: 122 };
 // Buildings and scenery. `y` is the ground contact point, which is also the
 // depth-sort key.
 export const PROPS = [
-  { name: 'inn', x: 186, y: 162 },
-  { name: 'bakery', x: 410, y: 160 },
-  { name: 'house2', x: 524, y: 152 },
-  { name: 'house0', x: 148, y: 302 },
-  { name: 'house1', x: 452, y: 312 },
+  // Trades cluster on the junction: the market hall and warehouse take the two
+  // biggest plots, the noisy work (lumber, forge) sits further out.
+  { name: 'inn', x: 186, y: 158 },
+  { name: 'bakery', x: 410, y: 158 },
+  { name: 'lumberyard', x: 86, y: 176 },
+  { name: 'warehouse', x: 520, y: 250 },
+  { name: 'marketplace', x: 392, y: 302 },
+  { name: 'smithy', x: 232, y: 330 },
+  { name: 'house2', x: 556, y: 150 },
+  { name: 'house0', x: 60, y: 268 },
+  { name: 'house1', x: 596, y: 300 },
   // Stalls are drawn in two passes with the stallholder sandwiched between, so
   // the awning is behind them and the counter is in front. `sortY` overrides
   // the depth key without moving where the sprite actually lands.
@@ -51,7 +57,7 @@ export const PROPS = [
   { name: 'crate', x: 336, y: 232 },
   { name: 'crate', x: 366, y: 250 },
   { name: 'haystack', x: 486, y: 118 },
-  { name: 'barrel', x: 424, y: 300 },
+  { name: 'barrel', x: 462, y: 292 },
   { name: 'crate', x: 168, y: 292 },
 ];
 
@@ -68,11 +74,16 @@ export const POI = {
   stallBKeeper: { x: 352, y: 232 },
   well: { x: 300, y: 280 },
   houseDoors: [
-    { x: 148, y: 312 },
-    { x: 452, y: 322 },
-    { x: 524, y: 162 },
+    { x: 60, y: 278 },
+    { x: 596, y: 310 },
+    { x: 556, y: 160 },
   ],
   plazaCentre: { x: 300, y: 212 },
+  lumberyardDrop: { x: 96, y: 188 },
+  woods: { x: 44, y: 120 },
+  warehouseDoor: { x: 520, y: 262 },
+  marketHall: { x: 392, y: 314 },
+  smithyDoor: { x: 240, y: 342 },
   // Where travellers enter and leave the map.
   gates: [
     { x: -24, y: 210 },
@@ -215,7 +226,7 @@ export function bakeGround(scale) {
 
   // Worn ground around doorways and stalls, so buildings don't sit on raw grass.
   const patches = [
-    ...PROPS.filter((q) => /inn|bakery|house|stall|well/.test(q.name)).map((q) => {
+    ...PROPS.filter((q) => /inn|bakery|house|stall|well|market|warehouse|lumber|smithy/.test(q.name)).map((q) => {
       const m = propMeta(q.name);
       return { x: q.x, y: q.y - 2, rx: m.w * 0.5, ry: 10 };
     }),

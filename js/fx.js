@@ -104,8 +104,10 @@ export function drawFx(g, toScreen, scale) {
 export function drawBubble(g, sx, sy, icon, scale, alpha = 1) {
   const ink = '#2f2018';
   const paper = '#f6efe2';
-  const spr = iconSprite(icon, scale);
-  const padding = 2 * scale;
+  // Icon one step below the world scale, tight padding: at full scale the
+  // bubble ends up nearly as wide as a villager is tall.
+  const spr = iconSprite(icon, Math.max(2, scale - 1));
+  const padding = Math.round(1.5 * scale);
   const w = spr.canvas.width + padding * 2;
   const h = spr.canvas.height + padding * 2;
   const x = Math.round(sx - w / 2);

@@ -9,7 +9,7 @@
 
 import { STYLE, pal, PALETTES } from './palette.js';
 import { villagerFrame, chickenFrame, dogFrame, clearSpriteCache } from './sprites.js';
-import { prop, clearPropCache } from './props.js';
+import { prop, propMeta, clearPropCache } from './props.js';
 import {
   WORLD, PROPS, POI, scatter, bakeGround, collectLights,
 } from './world.js';
@@ -32,9 +32,6 @@ let paused = false;
 let nextTraveler = 2;
 let fps = 0;
 
-// Chimneys, as offsets from each prop's anchor. Cheaper than teaching props.js
-// to report them, and there are only two kinds of chimney in the town.
-const CHIMNEYS = { bakery: [-16, -48], house0: [11, -41], house1: [11, -41], house2: [11, -41] };
 let smokeT = 0;
 
 // ------------------------------------------------------------------ view setup
@@ -118,13 +115,16 @@ function update(dt) {
   if (smokeT <= 0) {
     smokeT = 0.5 + Math.random() * 0.5;
     for (const q of PROPS) {
-      const off = CHIMNEYS[q.name];
+      const meta = propMeta(q.name);
+      const off = meta.chimney;
       if (!off) continue;
-      const isBakery = q.name === 'bakery';
-      if (!isBakery && Math.random() > 0.5) continue;      // houses puff lazily
+      // Working chimneys (the bakery oven, the forge) puff every tick; homes
+      // are lazier about it.
+      const working = q.name === 'bakery' || meta.forge;
+      if (!working && Math.random() > 0.5) continue;
       smoke(q.x + off[0] + (Math.random() - 0.5) * 2, q.y + off[1]);
-      if (isBakery && actors.some((a) => a.baking)) {
-        smoke(q.x + off[0], q.y + off[1] - 2);             // oven working
+      if (q.name === 'bakery' && actors.some((a) => a.baking)) {
+        smoke(q.x + off[0], q.y + off[1] - 2);             // oven going hard
       }
     }
   }
@@ -202,7 +202,7 @@ function drawStatic(q) {
   const spr = prop(q.name);
   const [sx, sy] = toScreen(q.x, q.y);
   const w = spr.canvas.width;
-  if (/tree|house|inn|bakery|stall|well|cart|haystack/.test(q.name)) {
+  if (/tree|house|inn|bakery|stall|well|cart|haystack|market|warehouse|lumber|smithy/.test(q.name)) {
     shadowFor(sx, sy, w * 0.55);
   }
   g.drawImage(spr.canvas, Math.round(sx - spr.ax), Math.round(sy - spr.ay));
