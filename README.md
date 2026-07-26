@@ -102,6 +102,12 @@ character work actually happens; the game view is too small to judge a face in.
 
 ![a page of the sprite sheet](docs/sprite-sheet.png)
 
+## Why it's built this way
+
+[`DECISIONS.md`](DECISIONS.md) records the choices behind the demo — the
+projection, the code-generated art, the perf fixes, and the rough edges I know
+about.
+
 ## Layout
 
 ```
@@ -116,6 +122,12 @@ js/agents.js    who does what: jobs, routes, trades
 js/fx.js        popups, sparkles, dust, chimney smoke, speech bubbles
 js/game.js      camera, render loop, day/night lighting, UI wiring
 ```
+
+Buildings share one `shell()` in `props.js` that draws the oblique 3/4 volume:
+front wall face-on, depth receding up-right at 2:1, roof front plane visible.
+The specialised trades (marketplace, warehouse, lumberyard, smithy) are
+distinguished by silhouette rather than detail, because detail doesn't survive
+at this size.
 
 A few notes on the parts that aren't obvious:
 
