@@ -27,8 +27,9 @@ There's nothing to build, and every path in the project is relative, so the
 repo can be served as-is — including from a project subpath like
 `https://<user>.github.io/crossroads/`.
 
-**Settings → Pages → Source: "Deploy from a branch" → Branch: this branch,
-Folder: `/ (root)` → Save.**
+Go to **[Settings → Pages](https://github.com/benedicthsieh/crossroads/settings/pages)**
+and set **Source: "Deploy from a branch" → Branch: `main`, Folder: `/ (root)`
+→ Save.**
 
 The demo lands at `/` and the sprite sheet at `/sprites.html`. The empty
 `.nojekyll` file at the repo root tells Pages to publish the files verbatim
