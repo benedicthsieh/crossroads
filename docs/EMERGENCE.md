@@ -57,13 +57,13 @@ forever.
 
 ```
 (arms − 2) × 0.95  +  wear × 0.80  +  room × 1.20
-  +  frontier pressure × 2.4  −  distance × 1.55  −  2.35
+  +  frontier pressure × 2.8  −  distance × 1.55  −  1.95
 ```
 
 Only caravans carrying eleven or more souls may consider this — a single wagon
 that stops in the middle of nowhere is just lost. `arms` is how many distinct
 roads meet at the junction, `wear` is how well trodden it already is, `room` is
-how far it is from the nearest existing town. The flat −2.35 is the cost of
+how far it is from the nearest existing town. The flat −1.95 is the cost of
 starting from nothing, and it is what stops hamlets sprouting at every fork.
 
 **Keep going, and leave by a far border.**
@@ -90,11 +90,11 @@ instead of spreading.
 ## 2. Frontier pressure — the convergence dial
 
 ```js
-frontierPressure(state) = 0.5 ^ (time / 1400)
+frontierPressure(state) = 0.5 ^ (time / 2600)
 ```
 
 This is the single most important number for making a map *finish*. It multiplies
-the value of founding anything, and it halves every 1400 simulated seconds. A new
+the value of founding anything, and it halves every 2600 simulated seconds. A new
 world is desperate for settlements; an old one would much rather you moved into
 one that exists.
 
@@ -104,14 +104,20 @@ four or five towns inside the first couple of minutes at 16× and then *stops*,
 which is the behaviour that matters — the count converges, and the same seed
 lands on roughly the same number every time.
 
-The pace is deliberately brisk. Slowing it down is a matter of raising
-`FOUND_WEAR` in `state.js` (how worn a junction must be before anyone will
-consider it) or shortening `FRONTIER_HALFLIFE`; neither changes where the run
-ends up, only how long it takes to get there.
+The pace is deliberately brisk — the first town usually lands inside a minute at
+16×. Slowing it down is a matter of raising `FOUND_WEAR` in `state.js` (how worn
+a junction must be before anyone will consider it) or shortening the wear rate
+in `caravans.js`. Shortening `FRONTIER_HALFLIFE` is *not* the way to do it: that
+changes where the run ends up, not how long it takes to get there.
 
-`MAX_TOWNS` still exists as a hard cap, but on a normal run the pressure curve
-gets there first — which is the point. A cap that never binds is a cap that
-isn't doing the design work.
+`MAX_TOWNS` is the ceiling and it does get reached on a good map; the pressure
+curve is what decides whether a *particular* map gets there or settles for four.
+Both halves matter, and getting the balance wrong is easy in either direction.
+Set the half-life too short and the frontier closes before the road network has
+matured — an early version decayed so fast that a textbook crossroads (three
+arms, well worn, 1288 units from the nearest town) sat unclaimed for the rest of
+the run, because founding had been priced out before the junction existed. Set
+it too long and every fork grows a hamlet.
 
 ---
 

@@ -101,6 +101,15 @@ function siteOk(state, tx, ty) {
   return true;
 }
 
+function nearestOtherTown(state, town, x, y) {
+  let best = Infinity;
+  for (const t of state.towns) {
+    if (t.id === town.id) continue;
+    best = Math.min(best, Math.hypot(t.x - x, t.y - y));
+  }
+  return best;
+}
+
 /**
  * Find somewhere in town for one more building, or null if it's hemmed in.
  *
@@ -120,6 +129,10 @@ function findPlot(state, town, kind, rng) {
     const y = town.y + Math.sin(angle) * radius * 0.74;   // squashed: reads better top-down
     const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
     if (!siteOk(state, tx, ty)) continue;
+    // Don't build into the neighbours. The spiral reaches a long way out for a
+    // big town — further than `TOWN_SPACING` in the worst case — and nothing
+    // else stops one settlement's outskirts landing in the middle of another's.
+    if (nearestOtherTown(state, town, x, y) < Math.hypot(x - town.x, y - town.y)) continue;
     let clear = true;
     for (const b of town.buildings) {
       const gap = (need + (FOOTPRINT[b.kind] || 28)) * 0.5;

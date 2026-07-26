@@ -110,9 +110,9 @@ const W = {
   /** Value of elbow room around a candidate site. */
   room: 1.20,
   /** Flat cost of founding anything at all. Keeps hamlets from sprouting. */
-  founding: 2.35,
+  founding: 1.95,
   /** How much the world's remaining appetite for settlement is worth. */
-  frontier: 2.4,
+  frontier: 2.8,
   /** How much a caravan enjoys simply being on the road, before it tires. */
   wanderlust: 2.05,
 };
@@ -125,8 +125,15 @@ const W = {
  * clock runs on, the same crossroads scores lower and lower, and caravans
  * increasingly prefer somewhere that already has a roof and a market. Without
  * it a long game slowly fills every junction with a village.
+ *
+ * The half-life has to outlast the *road network*, not the clock. Set to 1400
+ * it decayed faster than junctions matured: a diagnostic run found a textbook
+ * crossroads — three arms, well worn, 1288 units from the nearest town — that
+ * no caravan would touch, because by the time it existed founding had already
+ * been priced out. Two towns, and the map stopped. The frontier has to stay
+ * open at least as long as it takes a third and fourth crossroads to form.
  */
-const FRONTIER_HALFLIFE = 1400;
+const FRONTIER_HALFLIFE = 2600;
 export function frontierPressure(state) {
   return Math.pow(0.5, state.time / FRONTIER_HALFLIFE);
 }
