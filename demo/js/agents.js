@@ -7,8 +7,8 @@
 // market. Nothing here knows how anything is drawn.
 
 import { POI, FIELDS, WORLD, walkable } from './world.js';
-import { roleLook } from './sprites.js';
-import { popIcon, sparkle, dust, drawBubble } from './fx.js';
+import { roleLook } from '../../js/sprites.js';
+import { popIcon, sparkle, dust, drawBubble } from '../../js/fx.js';
 
 export const stats = { trades: 0, coins: 0, goods: 0, travelers: 0 };
 

@@ -6,9 +6,9 @@
 // junction. The ground is baked once into a single canvas at logical resolution
 // and then upscaled, which keeps the frame loop to one blit for the terrain.
 
-import { hash2, darken } from './pixel.js';
-import { pal } from './palette.js';
-import { propMeta, propLights } from './props.js';
+import { hash2, darken } from '../../js/pixel.js';
+import { pal } from '../../js/palette.js';
+import { propMeta, propLights } from '../../js/props.js';
 
 export const WORLD = { w: 640, h: 420 };
 

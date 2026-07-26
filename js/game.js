@@ -1,334 +1,70 @@
-// game.js — camera, render loop, lighting, and the control panel wiring.
+// game.js — boot, main loop, input and HUD.
 //
-// Render order per frame:
-//   1. baked terrain (one blit)
-//   2. everything else, depth-sorted by its ground contact point
-//   3. effects (popups, sparkles, smoke)
-//   4. night wash + additive lamplight
-//   5. labels / selection
+// The whole file is renderer-side. It owns the canvas, the camera, the DOM and
+// the clock; it calls `step(state, dt)` and then draws whatever came back. It
+// never reaches into the sim to nudge a traveller or place a road, which is
+// what keeps "save the game" honest: everything this file holds is either
+// derived from the state or is a view setting nobody needs restored.
 
-import { STYLE, pal, PALETTES } from './palette.js';
-import { villagerFrame, chickenFrame, dogFrame, clearSpriteCache } from './sprites.js';
-import { prop, propMeta, clearPropCache } from './props.js';
+import { STYLE } from './palette.js';
+import { createState, step, snapshot } from './sim/state.js';
+import { WORLD, TERRAIN_NAMES, MAP, TILE } from './sim/terrain.js';
+import { saveLocal, loadLocal, hasLocal, toShareCode, fromShareCode, saveSize } from './sim/save.js';
 import {
-  WORLD, PROPS, POI, scatter, bakeGround, collectLights,
-} from './world.js';
-import {
-  buildCast, buildCritters, spawnTraveler, stats, Actor,
-} from './agents.js';
-import { updateFx, drawFx, drawBubble, smoke, clearFx } from './fx.js';
+  makeCamera, resizeCamera, applyTransform, toScreen, toWorld, clampCamera,
+  ZOOM_STOPS, DEFAULT_STOP, bakeScaleFor,
+} from './render/camera.js';
+import { createRenderer, drawScene, tickSmoke, updateFx, updateRoadLayer } from './render/scene.js';
 
 const canvas = document.getElementById('view');
 const g = canvas.getContext('2d', { alpha: false });
 
-const cam = { x: 300, y: 214, dragging: false, lx: 0, ly: 0 };
-let ground = null;
-let statics = [];
-let lights = [];
-let actors = [];
-let critters = [];
-let selected = null;
+let state = null;
+let renderer = null;
+const cam = makeCamera();
+let dpr = 1;
 let paused = false;
-let nextTraveler = 2;
 let fps = 0;
+let zoomStop = DEFAULT_STOP;
+let autosaveT = 30;
 
-let smokeT = 0;
+// --------------------------------------------------------------- lifecycle
 
-// ------------------------------------------------------------------ view setup
-
-// Viewport size in CSS pixels. Cached because the coordinate transforms below
-// run a few thousand times a frame and must not allocate.
-const view = { w: 0, h: 0 };
-
-function resize() {
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const r = canvas.parentElement.getBoundingClientRect();
-  canvas.width = Math.round(r.width * dpr);
-  canvas.height = Math.round(r.height * dpr);
-  canvas.style.width = `${r.width}px`;
-  canvas.style.height = `${r.height}px`;
-  view.w = canvas.width / dpr;
-  view.h = canvas.height / dpr;
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.imageSmoothingEnabled = false;
+function adoptState(next) {
+  state = next;
+  if (!renderer) renderer = createRenderer(state);
+  // Always rebake: a loaded game may have a different seed, and the terrain
+  // canvas belongs to the seed it was painted from.
+  renderer.rebakeArt(state);
+  renderer.rebuildWorld(state);
+  // Open on the middle of the map; there is nothing else to look at yet.
+  const focus = state.towns[0] || { x: WORLD.w / 2, y: WORLD.h / 2 };
+  cam.x = focus.x;
+  cam.y = focus.y;
+  clampCamera(cam);
+  refreshHud();
+  refreshTowns();
 }
 
-/** Logical world coords -> CSS pixels. */
-function toScreen(wx, wy) {
-  const s = STYLE.scale;
-  return [(wx - cam.x) * s + view.w / 2, (wy - cam.y) * s + view.h / 2];
-}
-
-function toWorld(sx, sy) {
-  const s = STYLE.scale;
-  return [(sx - view.w / 2) / s + cam.x, (sy - view.h / 2) / s + cam.y];
-}
-
-function clampCam() {
-  const s = STYLE.scale;
-  const halfW = view.w / (2 * s), halfH = view.h / (2 * s);
-  // If the world is narrower than the viewport, centre it instead of clamping.
-  cam.x = halfW * 2 > WORLD.w ? WORLD.w / 2 : Math.max(halfW, Math.min(WORLD.w - halfW, cam.x));
-  cam.y = halfH * 2 > WORLD.h ? WORLD.h / 2 : Math.max(halfH, Math.min(WORLD.h - halfH, cam.y));
-}
-
-// ------------------------------------------------------------------- rebuilding
-
-function rebuildArt() {
-  clearSpriteCache();
-  clearPropCache();
-  ground = bakeGround(STYLE.scale);
-  lights = collectLights();
-  clampCam();
-}
-
-function rebuildWorld() {
-  statics = [...PROPS, ...scatter()].map((q) => ({ ...q }));
-  statics.sort((a, b) => depthOf(a) - depthOf(b));
-  actors = buildCast();
-  actors.forEach((a) => a.begin(actors));
-  critters = buildCritters();
-  clearFx();
-  stats.trades = stats.coins = stats.goods = stats.travelers = 0;
-}
-
-// ----------------------------------------------------------------------- update
-
-function update(dt) {
-  updateFx(dt);
-  for (const a of actors) a.update(dt, actors);
-  for (let i = actors.length - 1; i >= 0; i--) if (actors[i].dead) {
-    if (selected === actors[i]) selected = null;
-    actors.splice(i, 1);
+function applyZoom(stop) {
+  zoomStop = Math.max(0, Math.min(ZOOM_STOPS.length - 1, stop));
+  const next = ZOOM_STOPS[zoomStop];
+  const bake = bakeScaleFor(next.zoom);
+  const rebake = bake !== STYLE.scale;
+  STYLE.zoom = next.zoom;
+  STYLE.scale = bake;
+  applyTransform(cam, canvas, g, dpr);
+  if (rebake && renderer) {
+    renderer.rebakeArt(state);
+    renderer.rebuildWorld(state);
   }
-  for (const c of critters) c.update(dt);
-
-  nextTraveler -= dt;
-  const travelling = actors.filter((a) => a.loop === false).length;
-  if (nextTraveler <= 0 && travelling < 6) {
-    spawnTraveler(actors);
-    nextTraveler = 5 + Math.random() * 7;
-  }
-
-  // Chimney smoke: the bakery puffs harder while someone is actually baking.
-  smokeT -= dt;
-  if (smokeT <= 0) {
-    smokeT = 0.5 + Math.random() * 0.5;
-    for (const q of PROPS) {
-      const meta = propMeta(q.name);
-      const off = meta.chimney;
-      if (!off) continue;
-      // Working chimneys (the bakery oven, the forge) puff every tick; homes
-      // are lazier about it.
-      const working = q.name === 'bakery' || meta.forge;
-      if (!working && Math.random() > 0.5) continue;
-      smoke(q.x + off[0] + (Math.random() - 0.5) * 2, q.y + off[1]);
-      if (q.name === 'bakery' && actors.some((a) => a.baking)) {
-        smoke(q.x + off[0], q.y + off[1] - 2);             // oven going hard
-      }
-    }
-  }
-
-  if (selected) {
-    // Ease the camera toward whoever is being followed.
-    cam.x += (selected.x - cam.x) * Math.min(1, dt * 3);
-    cam.y += (selected.y - cam.y) * Math.min(1, dt * 3);
-    clampCam();
-  }
-
-  if (STYLE.dayNight) {
-    STYLE.timeOfDay = (STYLE.timeOfDay + dt / 180) % 1;   // a 3-minute day
-    const el = document.getElementById('time');
-    if (el) el.value = String(Math.round(STYLE.timeOfDay * 100));
-  }
+  clampCamera(cam);
+  const slider = document.getElementById('zoom');
+  slider.value = String(zoomStop);
+  document.getElementById('zoomVal').textContent = next.label;
 }
 
-// ----------------------------------------------------------------------- render
-
-// Ground shadows are baked to small canvases and blitted. A path fill per
-// sprite per frame is the single most expensive thing in a wide shot, and
-// caching also buys us a real gradient for the soft mode.
-const shadowCache = new Map();
-
-function shadowSprite(rx) {
-  const key = `${STYLE.shadow}|${rx}`;
-  const hit = shadowCache.get(key);
-  if (hit) return hit;
-
-  const soft = STYLE.shadow === 'soft';
-  const ry = Math.max(1, rx * (soft ? 0.42 : 0.3));
-  const cv = document.createElement('canvas');
-  cv.width = Math.ceil(rx * 2) + 4;
-  cv.height = Math.ceil(ry * 2) + 4;
-  const c = cv.getContext('2d');
-  const cx = cv.width / 2, cy = cv.height / 2;
-
-  if (soft) {
-    const grad = c.createRadialGradient(cx, cy, 0, cx, cy, rx);
-    grad.addColorStop(0, 'rgba(30,22,16,0.32)');
-    grad.addColorStop(0.55, 'rgba(30,22,16,0.19)');
-    grad.addColorStop(1, 'rgba(30,22,16,0)');
-    c.fillStyle = grad;
-    c.translate(cx, cy);
-    c.scale(1, ry / rx);                     // squash the circle into an ellipse
-    c.translate(-cx, -cy);
-    c.fillRect(cx - rx, cy - rx, rx * 2, rx * 2);
-  } else {
-    c.fillStyle = 'rgba(30,22,16,0.26)';
-    c.beginPath();
-    c.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-    c.fill();
-  }
-  shadowCache.set(key, cv);
-  return cv;
-}
-
-function shadowFor(sx, sy, w) {
-  if (STYLE.shadow === 'off') return;
-  const cv = shadowSprite(Math.max(2, Math.round(w * 0.34)));
-  g.drawImage(
-    cv,
-    Math.round(sx - cv.width / 2),
-    Math.round(sy - cv.height / 2 - STYLE.scale * 0.5),
-  );
-}
-
-/** Depth key: `sortY` lets a sprite sort somewhere other than where it draws. */
-function depthOf(q) {
-  return q.sortY != null ? q.sortY : q.y;
-}
-
-function drawStatic(q) {
-  const spr = prop(q.name);
-  const [sx, sy] = toScreen(q.x, q.y);
-  const w = spr.canvas.width;
-  if (/tree|house|inn|bakery|stall|well|cart|haystack|market|warehouse|lumber|smithy/.test(q.name)) {
-    shadowFor(sx, sy, w * 0.55);
-  }
-  g.drawImage(spr.canvas, Math.round(sx - spr.ax), Math.round(sy - spr.ay));
-}
-
-function drawActor(a) {
-  const spr = villagerFrame(a.look, a.view, a.frame, a.item, a.tool);
-  const [sx, sy0] = toScreen(a.x, a.y);
-  const sy = sy0 - a.z * STYLE.scale;
-  shadowFor(sx, sy0, 8 * STYLE.scale);
-  g.drawImage(spr.canvas, Math.round(sx - spr.ax), Math.round(sy - spr.ay));
-
-  if (a === selected) {
-    // Selection ring, drawn on the ground so it never hides the character.
-    g.strokeStyle = pal().coin;
-    g.lineWidth = Math.max(1, STYLE.scale / 2);
-    g.beginPath();
-    g.ellipse(sx, sy0 - STYLE.scale * 0.5, 6 * STYLE.scale, 2.4 * STYLE.scale, 0, 0, Math.PI * 2);
-    g.stroke();
-  }
-  if (a.bubble) {
-    const alpha = Math.min(1, a.bubbleT * 2.5);
-    drawBubble(g, sx, sy - spr.canvas.height - 2 * STYLE.scale, a.bubble, STYLE.scale, alpha);
-  }
-  if (STYLE.labels) {
-    label(a.name, sx, sy - spr.canvas.height - (a.bubble ? 15 : 3) * STYLE.scale);
-  }
-}
-
-function drawCritter(c) {
-  const spr = c.kind === 'dog' ? dogFrame(c.frame, c.flip) : chickenFrame(c.frame, c.flip);
-  const [sx, sy] = toScreen(c.x, c.y);
-  shadowFor(sx, sy, 5 * STYLE.scale);
-  g.drawImage(spr.canvas, Math.round(sx - spr.ax), Math.round(sy - spr.ay));
-}
-
-function label(text, sx, sy) {
-  g.font = `${Math.max(9, 3.2 * STYLE.scale)}px ui-monospace, monospace`;
-  g.textAlign = 'center';
-  g.lineWidth = 3;
-  g.strokeStyle = 'rgba(24,18,14,0.85)';
-  g.strokeText(text, sx, sy);
-  g.fillStyle = '#f6efe2';
-  g.fillText(text, sx, sy);
-}
-
-/** 0 = full night, 1 = full day. */
-function daylight() {
-  const t = STYLE.timeOfDay;
-  // Smooth dawn around 0.25 and dusk around 0.78.
-  const up = Math.min(1, Math.max(0, (t - 0.18) / 0.14));
-  const down = Math.min(1, Math.max(0, (0.9 - t) / 0.14));
-  return Math.min(up, down);
-}
-
-function drawNight() {
-  const p = pal();
-  const d = daylight();
-  const dark = (1 - d) * p.nightStrength;
-  if (dark <= 0.01) return;
-  const v = view;
-
-  g.fillStyle = p.night;
-  g.globalAlpha = dark;
-  g.fillRect(0, 0, v.w, v.h);
-  g.globalAlpha = 1;
-
-  // Warm pools of light. `lighter` on top of the wash reads like lamplight
-  // rather than a hole cut in the darkness.
-  g.globalCompositeOperation = 'lighter';
-  const s = STYLE.scale;
-  for (const L of lights) {
-    const [sx, sy] = toScreen(L.x, L.y);
-    const r = L.r * s * 0.55;
-    if (sx < -r || sy < -r || sx > v.w + r || sy > v.h + r) continue;
-    const grad = g.createRadialGradient(sx, sy, 0, sx, sy, r);
-    const a = 0.5 * dark;
-    grad.addColorStop(0, `rgba(255,215,140,${a})`);
-    grad.addColorStop(0.45, `rgba(240,180,90,${a * 0.4})`);
-    grad.addColorStop(1, 'rgba(240,180,90,0)');
-    g.fillStyle = grad;
-    g.fillRect(sx - r, sy - r, r * 2, r * 2);
-  }
-  g.globalCompositeOperation = 'source-over';
-}
-
-function render() {
-  const p = pal();
-  const v = view;
-  const s = STYLE.scale;
-  g.fillStyle = p.grassDeep;
-  g.fillRect(0, 0, v.w, v.h);
-
-  const [gx, gy] = toScreen(0, 0);
-  g.drawImage(ground, Math.round(gx), Math.round(gy));
-
-  // Depth-sorted merge of static scenery and moving things.
-  const dyn = [
-    ...actors.map((a) => ({ y: a.y, kind: 'a', ref: a })),
-    ...critters.map((c) => ({ y: c.y, kind: 'c', ref: c })),
-  ].sort((a, b) => a.y - b.y);
-
-  const margin = 80;
-  const [x0, y0] = toWorld(-margin * s, -margin * s);
-  const [x1, y1] = toWorld(v.w + margin * s, v.h + margin * s);
-
-  let i = 0, j = 0;
-  while (i < statics.length || j < dyn.length) {
-    const takeStatic =
-      j >= dyn.length || (i < statics.length && depthOf(statics[i]) <= dyn[j].y);
-    if (takeStatic) {
-      const q = statics[i++];
-      if (q.x > x0 && q.x < x1 && q.y > y0 && q.y < y1 + 60) drawStatic(q);
-    } else {
-      const d = dyn[j++];
-      if (d.ref.x < x0 || d.ref.x > x1 || d.ref.y < y0 || d.ref.y > y1) continue;
-      if (d.kind === 'a') drawActor(d.ref);
-      else drawCritter(d.ref);
-    }
-  }
-
-  drawFx(g, toScreen, s);
-  drawNight();
-}
-
-// -------------------------------------------------------------------- main loop
+// -------------------------------------------------------------------- loop
 
 let last = performance.now();
 let acc = 0, frames = 0;
@@ -342,21 +78,55 @@ function frame(now) {
     fps = Math.round(frames / acc);
     acc = 0;
     frames = 0;
-    updateHud();
+    refreshHud();
   }
-  if (!paused) update(raw * STYLE.speed);
-  render();
+
+  if (!paused) {
+    const dt = raw * STYLE.speed;
+    // Long steps at high speed are split so travellers can't tunnel through a
+    // tile without laying any wear down in it.
+    const slices = Math.min(8, Math.ceil(dt / 0.05));
+    for (let i = 0; i < slices; i++) step(state, dt / slices);
+    updateFx(raw);
+    tickSmoke(renderer, state, raw);
+    renderer.consumeEvents(state);
+    // The clock runs on wall time, not sim time. Tie it to `dt` and the whole
+    // map strobes between noon and midnight at 16x, which is unusable.
+    if (STYLE.dayNight) STYLE.timeOfDay = (STYLE.timeOfDay + raw / 260) % 1;
+
+    autosaveT -= raw;
+    if (autosaveT <= 0) {
+      autosaveT = 30;
+      saveLocal(state);
+    }
+  }
+
+  updateRoadLayer(renderer.roads, state);
+
+  if (cam.follow != null) {
+    const t = state.travelers.find((x) => x.id === cam.follow);
+    if (t) {
+      cam.x += (t.x - cam.x) * Math.min(1, raw * 3);
+      cam.y += (t.y - cam.y) * Math.min(1, raw * 3);
+      clampCamera(cam);
+    } else {
+      cam.follow = null;
+      renderer.follow = null;
+    }
+  }
+
+  drawScene(g, renderer, cam, state);
   requestAnimationFrame(frame);
 }
 
-// --------------------------------------------------------------------- controls
+// ----------------------------------------------------------------- input
 
 canvas.addEventListener('pointerdown', (e) => {
   cam.dragging = true;
   cam.lx = e.clientX;
   cam.ly = e.clientY;
-  canvas.setPointerCapture(e.pointerId);
   cam.moved = 0;
+  canvas.setPointerCapture(e.pointerId);
 });
 
 canvas.addEventListener('pointermove', (e) => {
@@ -364,116 +134,144 @@ canvas.addEventListener('pointermove', (e) => {
   const dx = e.clientX - cam.lx, dy = e.clientY - cam.ly;
   cam.lx = e.clientX;
   cam.ly = e.clientY;
-  cam.moved = (cam.moved || 0) + Math.abs(dx) + Math.abs(dy);
+  cam.moved += Math.abs(dx) + Math.abs(dy);
   if (cam.moved > 4) {
-    selected = null;                       // dragging breaks the follow
-    cam.x -= dx / STYLE.scale;
-    cam.y -= dy / STYLE.scale;
-    clampCam();
+    cam.follow = null;
+    renderer.follow = null;
+    cam.x -= dx / STYLE.zoom;
+    cam.y -= dy / STYLE.zoom;
+    clampCamera(cam);
   }
 });
 
 canvas.addEventListener('pointerup', (e) => {
   cam.dragging = false;
-  if ((cam.moved || 0) > 4) return;
-  // A click (not a drag) selects the nearest villager to follow.
+  if (cam.moved > 4) return;
   const r = canvas.getBoundingClientRect();
-  const [wx, wy] = toWorld(e.clientX - r.left, e.clientY - r.top);
-  let best = null, bestD = 14;
-  for (const a of actors) {
-    const d = Math.hypot(a.x - wx, (a.y - 6 - wy) * 0.8);
-    if (d < bestD) { bestD = d; best = a; }
+  const [wx, wy] = screenToWorld(e.clientX - r.left, e.clientY - r.top);
+  let best = null, bestD = 16;
+  for (const t of state.travelers) {
+    const d = Math.hypot(t.x - wx, (t.y - 6 - wy) * 0.8);
+    if (d < bestD) { bestD = d; best = t; }
   }
-  selected = best;
-  updateHud();
+  cam.follow = best ? best.id : null;
+  renderer.follow = cam.follow;
+  refreshHud();
 });
+
+/** CSS pixels within the canvas -> world units. */
+function screenToWorld(cssX, cssY) {
+  const z = STYLE.zoom / STYLE.scale;
+  return toWorld(cam, cssX / z, cssY / z);
+}
 
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  const dir = e.deltaY > 0 ? -1 : 1;
-  setScale(STYLE.scale + dir);
+  applyZoom(zoomStop + (e.deltaY > 0 ? -1 : 1));
 }, { passive: false });
 
 window.addEventListener('keydown', (e) => {
-  const pan = 24 / STYLE.scale * 4;
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+  const pan = 90 / STYLE.zoom;
   if (e.key === 'ArrowLeft' || e.key === 'a') cam.x -= pan;
   else if (e.key === 'ArrowRight' || e.key === 'd') cam.x += pan;
   else if (e.key === 'ArrowUp' || e.key === 'w') cam.y -= pan;
   else if (e.key === 'ArrowDown' || e.key === 's') cam.y += pan;
-  else if (e.key === ' ') { paused = !paused; syncPauseLabel(); }
-  else if (e.key === 'Escape') selected = null;
+  else if (e.key === ' ') { paused = !paused; syncPause(); }
+  else if (e.key === 'Escape') { cam.follow = null; renderer.follow = null; }
+  else if (e.key === '+' || e.key === '=') applyZoom(zoomStop + 1);
+  else if (e.key === '-' || e.key === '_') applyZoom(zoomStop - 1);
   else return;
-  if (e.key !== ' ') selected = null;
-  clampCam();
+  if (e.key !== ' ') { cam.follow = null; renderer.follow = null; }
+  clampCamera(cam);
   e.preventDefault();
 });
 
-window.addEventListener('resize', () => { resize(); clampCam(); });
+window.addEventListener('resize', () => {
+  dpr = resizeCamera(cam, canvas, g);
+  clampCamera(cam);
+});
 
-function setScale(n) {
-  const next = Math.max(2, Math.min(6, n));
-  if (next === STYLE.scale) return;
-  STYLE.scale = next;
-  document.getElementById('scale').value = String(next);
-  document.getElementById('scaleVal').textContent = `${next}×`;
-  rebuildArt();
+// -------------------------------------------------------------------- HUD
+
+let toastT = null;
+
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.hidden = false;
+  clearTimeout(toastT);
+  toastT = setTimeout(() => { el.hidden = true; }, 2600);
 }
 
-// -------------------------------------------------------------------------- HUD
+function clock(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
 
-function updateHud() {
+function refreshHud() {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  set('statTrades', stats.trades);
-  set('statGoods', stats.goods);
-  set('statCoins', stats.coins);
-  set('statTravelers', stats.travelers);
-  set('statPop', actors.length);
+  set('statTime', clock(state.time));
+  set('statTowns', state.towns.length);
+  set('statPop', state.travelers.length);
+  set('statTravelers', state.stats.travelers);
+  set('statRoads', state.stats.roadTiles);
+  set('statTrades', state.stats.trades);
   set('statFps', fps);
+
   const card = document.getElementById('card');
-  if (selected) {
+  const t = cam.follow != null ? state.travelers.find((x) => x.id === cam.follow) : null;
+  if (t) {
     card.hidden = false;
-    set('cardName', selected.name);
-    set('cardRole', selected.role);
-    set('cardItem', selected.item ? `carrying ${selected.item}` : (selected.tool ? `working (${selected.tool})` : 'empty-handed'));
+    const tile = state.terrain.kind[
+      Math.min(MAP.h - 1, Math.floor(t.y / TILE)) * MAP.w + Math.min(MAP.w - 1, Math.floor(t.x / TILE))
+    ];
+    const leg = t.legs && t.legs[t.leg];
+    const heading = !leg ? 'looking around'
+      : leg.kind === 'town' ? `bound for ${(state.towns.find((x) => x.id === leg.townId) || {}).name || 'town'}`
+        : leg.kind === 'gate' ? 'leaving by the far road' : 'running an errand';
+    set('cardName', `#${t.id}`);
+    set('cardRole', t.resident ? `${t.role}, local` : t.role);
+    set('cardItem', `${heading} · crossing ${TERRAIN_NAMES[tile]}${t.carry ? ` · carrying ${t.carry}` : ''}`);
   } else {
     card.hidden = true;
   }
 }
 
-function syncPauseLabel() {
+let lastTownCount = -1;
+
+function refreshTowns() {
+  const list = document.getElementById('townList');
+  list.innerHTML = '';
+  if (!state.towns.length) {
+    list.innerHTML = '<li class="quiet">None yet — the roads have to meet first.</li>';
+    return;
+  }
+  for (const t of state.towns) {
+    const li = document.createElement('li');
+    li.innerHTML = `<b>${t.name}</b> — ${t.buildings.length} building${t.buildings.length === 1 ? '' : 's'},
+      founded at ${clock(t.founded)}`;
+    li.style.cursor = 'pointer';
+    li.onclick = () => {
+      cam.follow = null;
+      renderer.follow = null;
+      cam.x = t.x;
+      cam.y = t.y;
+      clampCamera(cam);
+    };
+    list.append(li);
+  }
+}
+
+function syncPause() {
   document.getElementById('pause').textContent = paused ? '▶ Resume' : '❚❚ Pause';
 }
 
 function bindUi() {
-  const palSel = document.getElementById('palette');
-  for (const [k, v] of Object.entries(PALETTES)) {
-    const o = document.createElement('option');
-    o.value = k;
-    o.textContent = v.name;
-    palSel.append(o);
-  }
-  palSel.value = STYLE.palette;
-  palSel.onchange = () => { STYLE.palette = palSel.value; rebuildArt(); };
-
-  const scale = document.getElementById('scale');
-  scale.value = String(STYLE.scale);
-  scale.oninput = () => setScale(+scale.value);
-
-  const outline = document.getElementById('outline');
-  outline.value = STYLE.outline;
-  outline.onchange = () => { STYLE.outline = outline.value; rebuildArt(); };
-
-  const rim = document.getElementById('rim');
-  rim.value = String(Math.round(STYLE.rim * 100));
-  rim.oninput = () => {
-    STYLE.rim = +rim.value / 100;
-    document.getElementById('rimVal').textContent = `${rim.value}%`;
-    rebuildArt();
-  };
-
-  const shadow = document.getElementById('shadow');
-  shadow.value = STYLE.shadow;
-  shadow.onchange = () => { STYLE.shadow = shadow.value; };
+  const zoom = document.getElementById('zoom');
+  zoom.max = String(ZOOM_STOPS.length - 1);
+  zoom.oninput = () => applyZoom(+zoom.value);
 
   const speed = document.getElementById('speed');
   speed.value = String(STYLE.speed);
@@ -483,35 +281,74 @@ function bindUi() {
   labels.checked = STYLE.labels;
   labels.onchange = () => { STYLE.labels = labels.checked; };
 
-  const cycle = document.getElementById('cycle');
-  cycle.checked = STYLE.dayNight;
-  cycle.onchange = () => { STYLE.dayNight = cycle.checked; };
+  document.getElementById('pause').onclick = () => { paused = !paused; syncPause(); };
 
-  const time = document.getElementById('time');
-  time.value = String(Math.round(STYLE.timeOfDay * 100));
-  time.oninput = () => {
-    STYLE.timeOfDay = +time.value / 100;
-    STYLE.dayNight = false;
-    cycle.checked = false;
+  document.getElementById('newWorld').onclick = () => {
+    adoptState(createState());
+    toast('New map generated.');
   };
 
-  document.getElementById('pause').onclick = () => { paused = !paused; syncPauseLabel(); };
-  document.getElementById('traveler').onclick = () => spawnTraveler(actors);
-  document.getElementById('reset').onclick = () => { rebuildWorld(); actors.forEach((a) => a.begin(actors)); };
+  document.getElementById('save').onclick = () => {
+    toast(saveLocal(state) ? `Saved (${Math.round(saveSize() / 1024)} kB).` : 'Could not save.');
+  };
+
+  document.getElementById('load').onclick = () => {
+    if (!hasLocal()) { toast('No save found.'); return; }
+    const loaded = loadLocal();
+    if (!loaded) { toast('That save could not be read.'); return; }
+    adoptState(loaded);
+    toast('Save loaded.');
+  };
+
+  document.getElementById('copyCode').onclick = async () => {
+    const code = toShareCode(state);
+    try {
+      await navigator.clipboard.writeText(code);
+      toast(`Share code copied (${Math.round(code.length / 1024)} kB).`);
+    } catch {
+      // Clipboard is blocked without a user gesture in some contexts, and over
+      // plain HTTP everywhere. A prompt is ugly but it always works.
+      window.prompt('Copy this Crossroads share code:', code);
+    }
+  };
+
+  document.getElementById('pasteCode').onclick = () => {
+    const code = window.prompt('Paste a Crossroads share code:');
+    if (!code) return;
+    try {
+      adoptState(fromShareCode(code));
+      toast('Loaded from share code.');
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+
+  // The town list only changes when a town is founded, so poll cheaply rather
+  // than rebuilding a DOM list every frame.
+  setInterval(() => {
+    if (state.towns.length !== lastTownCount) {
+      lastTownCount = state.towns.length;
+      refreshTowns();
+    } else if (state.towns.length) {
+      refreshTowns();
+    }
+  }, 2000);
 }
 
-// -------------------------------------------------------------------------- boot
+// -------------------------------------------------------------------- boot
 
-resize();
+dpr = resizeCamera(cam, canvas, g);
 bindUi();
-rebuildArt();
-rebuildWorld();
-// Start looking at the crossroads itself.
-cam.x = POI.plazaCentre.x;
-cam.y = POI.plazaCentre.y + 6;
-clampCam();
-updateHud();
+applyZoom(DEFAULT_STOP);
+adoptState(loadLocal() || createState());
+syncPause();
 requestAnimationFrame(frame);
 
-// Handy for poking at the sim from the console while art-directing.
-window.CROSSROADS = { STYLE, actors, stats, cam, spawn: () => spawnTraveler(actors), Actor };
+// Handy for poking at a running game from the console.
+window.CROSSROADS = {
+  get state() { return state; },
+  snapshot: () => snapshot(state),
+  renderer: () => renderer,
+  cam,
+  STYLE,
+};

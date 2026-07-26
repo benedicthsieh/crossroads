@@ -36,9 +36,9 @@
 </div>
 <div id="root"></div>
 <script type="module">
-import { STYLE, PALETTES, pal } from './js/palette.js';
-import { villagerFrame, chickenFrame, dogFrame, iconSprite, clearSpriteCache, ROLES } from './js/sprites.js';
-import { prop, clearPropCache } from './js/props.js';
+import { STYLE, PALETTES, pal } from '../js/palette.js';
+import { villagerFrame, chickenFrame, dogFrame, iconSprite, clearSpriteCache, ROLES } from '../js/sprites.js';
+import { prop, clearPropCache } from '../js/props.js';
 
 const root = document.getElementById('root');
 const VIEWS = ['front', 'side', 'left', 'back'];
@@ -124,7 +124,7 @@ function lookFor(role) {
   return looks.get(key);
 }
 
-import * as spritesMod from './js/sprites.js';
+import * as spritesMod from '../js/sprites.js';
 window.__sprites = spritesMod;
 
 const palSel = document.getElementById('pal');

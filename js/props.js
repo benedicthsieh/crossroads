@@ -770,9 +770,106 @@ function flowers(variant) {
   return { px, ax: 6, ay: 9, lights: [] };
 }
 
+// --------------------------------------------------------------- landscape
+//
+// The terrain painter draws hills and mountains as *ground* — banded colour and
+// hillshade. That alone reads as a height map rather than as a place, so these
+// props go on top to give the high ground a silhouette. They are the only thing
+// standing between "a beige patch" and "a mountain you'd rather walk around".
+
+/** A rock spire. Big ones are mountain peaks, small ones are outcrops. */
+function crag(variant) {
+  const p = pal();
+  const tall = variant % 3;
+  const h = 20 + tall * 9;
+  const w = 18 + tall * 7;
+  const px = new Pix(w, h + 4);
+  const cx = w >> 1;
+  const base = mix(p.stone, p.dirtDeep, 0.25);
+  const lit = lighten(base, 0.28);
+  const dark = darken(base, 0.34);
+
+  // A stack of narrowing slabs. Offsetting each one gives the crooked,
+  // fractured look that a plain triangle never has.
+  let width = w - 2;
+  let y = h;
+  let lean = 0;
+  for (let band = 0; width > 2; band++) {
+    const bh = Math.max(2, 3 + ((band * 7 + variant * 3) % 3));
+    lean += Math.round(hash2(band, variant, 5) * 3) - 1;
+    const x = cx - (width >> 1) + lean;
+    px.fill(x, y - bh, width, bh, base);
+    px.shadeOver(x + Math.round(width * 0.55), y - bh, width, bh, dark);   // right face
+    px.fill(x, y - bh, Math.max(1, width >> 2), 1, lit);                   // lit ledge
+    y -= bh;
+    width -= 2 + ((band + variant) % 2) * 2;
+  }
+  if (y > 2) px.fill(cx - 1 + lean, y - 2, 3, 3, lit);                     // summit cap
+
+  // Scree at the foot, so the spire isn't pasted onto flat ground.
+  for (let i = 0; i < 7; i++) {
+    const sx = 1 + Math.floor(hash2(i, variant, 12) * (w - 2));
+    const sy = h - Math.floor(hash2(i, variant, 13) * 3);
+    px.set(sx, sy, hash2(i, variant, 14) > 0.5 ? dark : base);
+  }
+  return { px, ax: cx, ay: h + 1, lights: [] };
+}
+
+/** A boulder, for hill country. */
+function rock(variant) {
+  const p = pal();
+  const px = new Pix(14, 11);
+  const base = mix(p.stone, p.dirt[2], 0.3);
+  px.disc(7, 7, variant % 2 ? 4 : 3.2, base);
+  px.shadeOver(8, 4, 6, 8, darken(base, 0.26));
+  px.fill(4, 4, 3, 1, lighten(base, 0.3));
+  if (variant % 2) px.disc(3, 9, 2, darken(base, 0.12));
+  return { px, ax: 7, ay: 10, lights: [] };
+}
+
+/** Reeds, to stop riverbanks being a hard edge between blue and green. */
+function reeds(variant) {
+  const p = pal();
+  const px = new Pix(12, 12);
+  const green = darken(p.leaf[0], 0.1);
+  for (let i = 0; i < 5; i++) {
+    const x = 2 + Math.floor(hash2(i, variant, 21) * 8);
+    const top = 2 + Math.floor(hash2(i, variant, 22) * 4);
+    px.line(x, 11, x + (i % 2 ? 1 : -1), top, green);
+    if (hash2(i, variant, 23) > 0.5) px.fill(x - 1 + (i % 2), top - 1, 2, 2, p.wheatDark);
+  }
+  return { px, ax: 6, ay: 11, lights: [] };
+}
+
+/** A conifer. Reads as upland forest next to the round-canopy broadleaf trees. */
+function pine(variant) {
+  const p = pal();
+  const px = new Pix(22, 34);
+  const cx = 11;
+  const dark = darken(p.leaf[2], 0.12);
+  px.fill(cx - 1, 26, 3, 7, p.trunk);
+  px.shadeOver(cx + 1, 26, 1, 7, darken(p.trunk, 0.25));
+  for (let i = 0; i < 6; i++) {
+    const w = 4 + i * 3;
+    const y = 4 + i * 4;
+    const col = i % 2 ? dark : p.leaf[variant % 2 ? 1 : 0];
+    for (let j = 0; j < 4; j++) {
+      const ww = Math.max(2, w - (3 - j) * 2);
+      px.fill(cx - (ww >> 1), y + j, ww, 1, col);
+    }
+    px.shadeOver(cx + 1, y, w, 4, darken(col, 0.24));
+  }
+  px.fill(cx, 2, 1, 3, dark);
+  return { px, ax: cx, ay: 33, lights: [] };
+}
+
 // ------------------------------------------------------------------- registry
 
 const BUILDERS = {
+  crag0: () => crag(0), crag1: () => crag(1), crag2: () => crag(2),
+  rock0: () => rock(0), rock1: () => rock(1),
+  reeds0: () => reeds(0), reeds1: () => reeds(1),
+  pine0: () => pine(0), pine1: () => pine(1),
   house0: () => house(0), house1: () => house(1), house2: () => house(2),
   inn, bakery, well, cart, signpost, lamp, barrel, crate, haystack,
   marketplace, warehouse, lumberyard, smithy,

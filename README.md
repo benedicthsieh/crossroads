@@ -1,13 +1,14 @@
 # Crossroads
 
-An art-style test for an idle/simulation game about roads. Roads get worn in
-first, crossings turn into markets, and markets turn into towns — this demo is a
-snapshot of one such crossroads mid-life, with villagers and travellers actually
-doing business in the square.
+An idle/simulation game about roads. Nothing on the map is placed by hand:
+travellers cross a generated landscape, the ground they walk over wears down,
+worn ground is cheaper to walk over than raw ground, and so traffic slowly
+concentrates itself into roads. Where three or more roads end up meeting,
+somebody digs a well — and a town grows on the crossroads.
 
 It runs entirely in the browser. No build step, no dependencies, no backend.
 
-![the crossroads at midday](docs/crossroads-day.png)
+![the whole map after a few minutes](docs/crossroads-day.png)
 
 ## Run it
 
@@ -21,6 +22,100 @@ python3 -m http.server 8000
 
 Any static server works — `npx serve`, `caddy file-server`, whatever you have.
 
+## What you're watching
+
+Give it a couple of minutes at 8× or 16× and the map builds itself, in order:
+
+1. **Travellers cross.** They enter at a gap in the map edge and head for the
+   far side, taking the cheapest route they can find.
+2. **Terrain gets in the way.** Grassland is cheap, forest is slower, hills
+   slower still, and mountain ridges and rivers are close to walls. So the
+   first travellers are already funnelling through the same handful of passes
+   and fords.
+3. **Tracks appear.** Every step lays down wear, and wear makes ground cheaper.
+   The faintest stipple of a shortcut pulls in the next traveller, and by the
+   twentieth it is a track.
+4. **Tracks thicken into roads and meet.** Heavily used routes widen; the
+   junctions where two of them cross become the cheapest places on the map to
+   be.
+5. **Towns grow on the junctions.** A busy crossroads gets a well, then a stall,
+   then an inn, then houses and trades — paid for by the traffic that keeps
+   arriving. Travellers start routing *through* towns, which makes them busier
+   still.
+6. **A ford that gets busy enough becomes a bridge.**
+
+None of that is scripted. The only authored thing on the map is how expensive
+each kind of ground is to walk on.
+
+**Controls:** drag to pan, scroll or the zoom slider to zoom, click a traveller
+to follow them, space to pause. Arrow keys or WASD also pan. Clicking a town in
+the side panel jumps to it.
+
+## Saving and sharing
+
+The game state is plain data kept completely apart from the rendering layer, so
+a save is small and honest: the map seed, the road wear, the towns, and whoever
+is currently walking. Terrain, scenery and in-flight routes are all regenerated
+from the seed on load rather than stored.
+
+- **Save / Load** use localStorage, and the game autosaves every 30 seconds.
+- **Copy share code** puts the whole game in the clipboard as text. Paste it
+  into another browser with **Paste code** and it continues from exactly there —
+  same map, same roads, same people, same dice.
+
+A few minutes of play is around 40 kB.
+
+## The art
+
+The look is aiming at the civilians in *They Are Billions*: tiny, chunky,
+readable in a crowd, with a slightly oversized head for charm. Every sprite —
+travellers, buildings, trees, crags, icons, the terrain — is **generated in code
+as pixel art at runtime**. There are no image files in this repo.
+
+Three things do most of the stylistic work, all in `js/pixel.js`:
+
+- **Selective outlining** — the silhouette is wrapped in a *darker version of
+  whatever pixel it touches* rather than a flat black keyline.
+- **Rim light** — any pixel whose sky-facing neighbour is empty gets brightened,
+  faking a single soft light from above for free.
+- **Integer bake, continuous zoom** — sprites are baked on whole pixels at 1–3×
+  and the camera makes up the rest, so zoom can run smoothly from a
+  whole-map view to a close-up without the art ever landing on half a pixel.
+
+![a town at a river crossing](docs/crossroads-night.png)
+
+### `demo/`
+
+The art-style test this repo started as: a hand-placed market crossroads with
+live palette, pixel size, outline, rim-light and shadow controls, plus
+`demo/sprites.html`, which dumps every frame the game can draw at 8×. The game's
+look is locked to the values chosen there, and the demo stays as the lab for
+changing that decision.
+
+## Layout
+
+```
+index.html          the game
+demo/               the archived art-style test
+js/pixel.js         pixel-art rasteriser
+js/palette.js       palettes and the locked style values
+js/sprites.js       villagers, critters, icons
+js/props.js         buildings, stalls, trees, crags, rocks, reeds
+js/sim/             the game state: terrain, roads, pathing, travellers, towns
+js/render/          the view: camera, terrain bake, road layer, scene, scenery
+js/game.js          boot, loop, input, HUD
+```
+
+The split between `js/sim/` and `js/render/` is strict and deliberate:
+`js/sim/` has no DOM, no canvas and no `Math.random()` — all of its randomness
+runs through a seeded generator whose entire state is one 32-bit integer. That
+is what makes the game snapshottable mid-frame, resumable from localStorage,
+and shareable as a string.
+
+[`CLAUDE.md`](CLAUDE.md) has the working notes for the codebase — invariants,
+tuning knobs, and how to verify a change. [`DECISIONS.md`](DECISIONS.md) records
+why things are built the way they are.
+
 ## Put it online (GitHub Pages)
 
 There's nothing to build, and every path in the project is relative, so the
@@ -31,9 +126,9 @@ Go to **[Settings → Pages](https://github.com/benedicthsieh/crossroads/setting
 and set **Source: "Deploy from a branch" → Branch: `main`, Folder: `/ (root)`
 → Save.**
 
-The demo lands at `/` and the sprite sheet at `/sprites.html`. The empty
-`.nojekyll` file at the repo root tells Pages to publish the files verbatim
-instead of running them through Jekyll first.
+The game lands at `/`, the art test at `/demo/` and the sprite sheet at
+`/demo/sprites.html`. The empty `.nojekyll` file at the repo root tells Pages to
+publish the files verbatim instead of running them through Jekyll first.
 
 Two things to know before you flip it on:
 
@@ -43,112 +138,11 @@ Two things to know before you flip it on:
   site private requires Enterprise Cloud, so on any other plan, publishing puts
   the demo on the open web even though the code stays private.
 
-A GitHub Actions workflow is the other route, and worth switching to if this
-ever grows a build step. It buys nothing today.
-
-## What you're looking at
-
-Everyone on the map is running an errand, and goods and coin actually change
-hands at each stop:
-
-| Who | What they do |
-| --- | --- |
-| **Farmers** | Cut wheat in the fields, haul it to the produce stall, get paid |
-| **The baker** | Buys grain at the stall, bakes at the shop (watch the chimney), sells bread |
-| **Stallholders** | Stand behind their counters and trade with whoever walks up |
-| **Villagers** | Fetch water from the well, shop for bread, go home |
-| **Travellers** | Arrive on one road, trade in the square, rest at the inn, leave by another road |
-| **Kids, chickens, a dog** | No economic purpose whatsoever |
-
-Every transaction pops the goods and coin above the traders' heads, so you can
-read the economy at a glance. The counters in the side panel tally it up.
-
-**Controls:** drag to pan, scroll to zoom, click a villager to follow them,
-space to pause. Arrow keys or WASD also pan.
-
-Leave the day/night cycle running (or drag the `Time of day` slider) and the
-lamps, shop windows and market stalls light up:
-
-![the same crossroads after dark](docs/crossroads-night.png)
-
-## The art
-
-The look is aiming at the civilians in *They Are Billions*: tiny, chunky,
-readable in a crowd, with a slightly oversized head for charm. Every sprite —
-villagers, buildings, trees, icons, the terrain — is **generated in code as
-pixel art at runtime**. There are no image files in this repo.
-
-That sounds like a strange choice for an art test, but it's the reason the
-`Look` panel works: the palette, pixel size, outline treatment, rim light and
-shadow style are all live knobs, and changing one re-bakes the entire town so
-you can judge two styles back to back in a second.
-
-Three things do most of the stylistic work, all in `js/pixel.js`:
-
-- **Selective outlining** — the silhouette is wrapped in a *darker version of
-  whatever pixel it touches* rather than a flat black keyline. Much softer, and
-  it keeps colour in the shadows. (Switch `Outline` to "Hard (inked)" to compare.)
-- **Rim light** — any pixel whose sky-facing neighbour is empty gets brightened,
-  faking a single soft light from above for free.
-- **Integer scaling only** — sprites are authored at ~20px tall and blitted at
-  2–6× with smoothing off, so a pixel is always a crisp square.
-
-### `sprites.html`
-
-A dev page that dumps every frame the game can draw — all roles, all four
-views, the whole walk cycle, carried goods, tools, critters, icons and props —
-at 8× on a grass-coloured field, with the same style controls. This is where the
-character work actually happens; the game view is too small to judge a face in.
-
-![a page of the sprite sheet](docs/sprite-sheet.png)
-
-## Why it's built this way
-
-[`DECISIONS.md`](DECISIONS.md) records the choices behind the demo — the
-projection, the code-generated art, the perf fixes, and the rough edges I know
-about.
-
-## Layout
-
-```
-index.html      the demo
-sprites.html    sprite-sheet dev page for art-directing the cast
-js/pixel.js     pixel-art rasteriser: grid, outline, rim light, colour maths
-js/palette.js   the three palettes and the live style knobs
-js/sprites.js   villagers (body, hair, hats, carried goods), critters, icons
-js/props.js     buildings, stalls, trees, scenery
-js/world.js     road graph, plaza, prop placement, baked terrain
-js/agents.js    who does what: jobs, routes, trades
-js/fx.js        popups, sparkles, dust, chimney smoke, speech bubbles
-js/game.js      camera, render loop, day/night lighting, UI wiring
-```
-
-Buildings share one `shell()` in `props.js` that draws the oblique 3/4 volume:
-front wall face-on, depth receding up-right at 2:1, roof front plane visible.
-The specialised trades (marketplace, warehouse, lumberyard, smithy) are
-distinguished by silhouette rather than detail, because detail doesn't survive
-at this size.
-
-A few notes on the parts that aren't obvious:
-
-- **Terrain is baked once.** `bakeGround()` paints the whole map at one logical
-  pixel per pixel — grass speckle, road dither, wheel ruts, worn patches around
-  doorways — then upscales it. The frame loop draws terrain in a single blit.
-- **Depth sorting is by ground contact point.** A prop can override its sort key
-  with `sortY`, which is how a stallholder ends up sandwiched between their own
-  awning and their own counter.
-- **Behaviour is a list of steps.** Each villager runs a looping script of
-  `go` / `wait` / `take` / `trade` steps. It's deliberately shallow, but it's the
-  same shape a real jobs-and-routes sim needs, so it should survive contact with
-  the actual game.
-
 ## Deliberately not here
 
-- **No backend.** Nothing is persisted; reloading resets the town.
-- **No pathfinding.** Villagers walk in straight lines and gently push each
-  other apart. The map is laid out so that's enough.
-- **No growth.** The town is hand-placed. The whole premise of the game — roads
-  accumulating traffic, junctions sprouting buildings — is the next thing to
-  build, and `world.js` is the file where it goes: `ROADS` becomes state that
-  the sim edits rather than a constant, and `PROPS` gets placed by rules
-  instead of by hand.
+- **No backend.** Saves are local; sharing is copy-and-paste.
+- **No economy inside towns yet.** Buildings appear, residents wander, but
+  nobody has a job. The demo's step-script behaviours are the shape that goes
+  here next.
+- **No player.** Nothing to click on except the camera. The point so far is to
+  make the map build itself convincingly.

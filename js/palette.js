@@ -2,17 +2,31 @@
 //
 // Three complete looks. Swapping one re-bakes every sprite and the ground, so
 // this is the fastest way to judge an art style side by side.
+//
+// The art test is over: the game runs on the values below and never changes
+// them. Only `demo/index.html` still exposes them as live controls, which is
+// what they exist for now — a lab for re-deciding the look, not a game setting.
+// The one dial that survived into the game is zoom, and it is a camera control
+// rather than an art one.
 
 export const STYLE = {
-  scale: 3,            // integer pixel size
+  // --- locked -------------------------------------------------------------
   outline: 'selout',   // 'selout' | 'hard' | 'off'
   rim: 0.2,            // rim-light strength
   shadow: 'soft',      // 'soft' | 'hard' | 'off'
   palette: 'storybook',
-  labels: false,
-  speed: 1,
   dayNight: true,
   timeOfDay: 0.32,     // 0..1, 0 = midnight
+
+  // --- live ---------------------------------------------------------------
+  // `scale` is the integer size a sprite pixel is *baked* at. `zoom` is how
+  // many screen pixels one world unit actually covers, and the renderer makes
+  // up the difference with a canvas transform. Keeping them apart is what lets
+  // zoom be continuous (0.5–3) while the pixel art stays baked on whole pixels.
+  scale: 2,
+  zoom: 2,
+  labels: false,
+  speed: 1,
 };
 
 const SHARED = {
