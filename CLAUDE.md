@@ -136,12 +136,16 @@ leverage:
 | `sim/towns.js` | `TOWN_SPACING`, `MAX_TOWNS` | how far apart towns must be, and the hard cap |
 | `sim/towns.js` | `HOUSE_BEDS`, the house cap in `nextBuild` | housing supply, and how much of a town is homes |
 | `sim/towns.js` | `FOOTPRINT`, the `findPlot` radius | how much a town sprawls |
+| `sim/state.js` | `FOUND_WEAR`, the rate in `considerTrade` | how mature a junction must be to settle; how busy the roads look |
 | `props.js` | `UNIT.building` | how much ground a building sprite covers |
 
-Current tuning lands 4–5 towns inside the first two real minutes at 16× on a
+Current tuning lands 5 towns inside the first two real minutes at 16× on a
 420×280-tile map, and then holds there — the count is the target, the pace is
-deliberately brisk so a session has something to look at early. `FRONTIER_HALFLIFE`
-and `FOUND_WEAR` (in state.js) are the two dials for stretching it out.
+deliberately brisk so a session has something to look at early. To stretch it
+out, raise `FOUND_WEAR` or cut `WEAR_PER_UNIT`; do **not** shorten
+`FRONTIER_HALFLIFE`, which changes where the run ends up rather than how long it
+takes (see the note in `docs/EMERGENCE.md` — that mistake cost a couple of towns
+and took a diagnostic run to find).
 
 ## Running and testing
 
