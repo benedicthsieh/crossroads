@@ -215,8 +215,12 @@ export function growPopulation(state, town, dt) {
 
 // ----------------------------------------------------------------- founding
 
-/** Start a settlement here. Called by a caravan that has decided to stop. */
-export function foundTown(state, x, y, souls) {
+/**
+ * Start a settlement here. Called by a caravan that has decided to stop.
+ * The founding party's `pop` is added by the caller's `settle`, not here, so
+ * founding and joining credit population through exactly one code path.
+ */
+export function foundTown(state, x, y) {
   if (state.towns.length >= MAX_TOWNS) return null;
   const town = {
     id: state.nextId++,

@@ -246,6 +246,9 @@ export function snapshot(state) {
       speed: Math.round(c.speed * 10) / 10,
       wagons: c.wagons, souls: c.souls, carry: c.carry, goal: c.goal,
       legs: c.legs, leg: c.leg, home: c.home,
+      // Persisted so a reloaded caravan doesn't immediately re-pick the
+      // junction it was just turned away from.
+      noFoundUntil: c.noFoundUntil ? Math.round(c.noFoundUntil) : undefined,
       rest: Math.round(c.rest * 10) / 10, origin: c.origin,
     })),
     // Residents are a *sample* of a town's population, not the population

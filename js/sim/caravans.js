@@ -468,7 +468,7 @@ function arriveLeg(state, c) {
     // Somebody else may have taken the spot, or the junction may have faded.
     const clash = state.towns.some((t) => Math.hypot(t.x - c.x, t.y - c.y) < TOWN_SPACING);
     if (!clash && state.towns.length < MAX_TOWNS) {
-      const town = foundTown(state, c.x, c.y, c.souls);
+      const town = foundTown(state, c.x, c.y);
       if (town) { settle(state, c, town); return; }
     }
     // The frontier is stale or taken. Stand down from founding for a while, or
