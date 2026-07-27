@@ -3,14 +3,20 @@
 // A town is never placed by the game. It is *chosen*: a caravan carrying enough
 // people arrives at an unclaimed crossroads, decides that this is better than
 // anywhere else it could be, and stops for good. Everything after that is
-// downstream of two numbers the town keeps — `traffic`, which pays for
-// buildings, and `pop`, which is who lives there and wants somewhere to sleep.
+// downstream of what the town keeps: `traffic`, which is the labour and coin
+// that passing trade brings; `stock`, which is the food, wood and stone it has
+// gone out and got (see `economy.js`); and `pop`, which is who lives there and
+// wants somewhere to sleep and something to eat.
 //
 // A town is plain data. It holds no sprites, no canvases and no colours; the
 // renderer turns `kind` into a prop and that is the only place art enters.
 
-import { MAP, TILE, buildable, tileIndex } from './terrain.js';
+import { MAP, TILE, T, buildable, tileIndex } from './terrain.js';
 import { ROAD_MIN, armCount } from './roads.js';
+import {
+  emptyStock, stockOf, landOf, hasMaterials, payMaterials, needsStone, materialsFor,
+  countKind, workingFields, foodCeiling, consumption, stoneCeiling, hasStoneNearby,
+} from './economy.js';
 
 /**
  * Minimum gap between town centres, in world units. Sized against the map
@@ -21,25 +27,42 @@ import { ROAD_MIN, armCount } from './roads.js';
 export const TOWN_SPACING = 470;
 export const MAX_TOWNS = 5;
 
-/** How many people one house sleeps, and how many the founding camp holds. */
+/**
+ * How many people sleep where.
+ *
+ * A tent is one unhitched wagon, so it holds exactly a wagon's souls — the
+ * founding party pitches its own transport and that is the town's first
+ * housing. `CAMP_BEDS` is the couple of people who will always sleep under a
+ * cart whatever else is going on.
+ */
 const HOUSE_BEDS = 9;
-const CAMP_BEDS = 12;
+const TENT_BEDS = 5;
+const CAMP_BEDS = 3;
 
 /**
  * What gets built, in order.
  *
- * The sequence is the story of a settlement: a well and a stall for the traffic
- * that's already passing, an inn once people stay the night, then the trades
- * that only make sense with a market to sell into. Houses are *not* in this
- * list — housing is demand-driven, and `nextBuild` splices a house in whenever
- * the town is running out of beds. That is what makes a busy town sprawl into
- * a ring of homes around a working centre instead of following a script.
+ * The sequence is the story of a settlement: a stall for the traffic that's
+ * already passing and a fingerpost to name the place, a lumberyard once there
+ * is enough felling to be worth organising, then the well — which is the first
+ * thing here made of *stone*, and therefore the first thing that needs a quarry
+ * running before it can be started at all. That break in the middle of the list
+ * is the tier line, and it is meant to be felt: everything above it a town can
+ * put up with axes the week it arrives, everything below it has to be earned.
+ *
+ * Houses, farms and quarries are *not* in this list. They are demand-driven —
+ * `nextBuild` splices them in when the town runs short of beds, food or stone —
+ * which is what makes a settlement's shape reflect the ground it landed on
+ * instead of following a script.
  */
 export const TOWN_PLAN = [
-  'well', 'stall', 'signpost', 'inn', 'lamp', 'stall',
+  'stall', 'signpost', 'lumberyard', 'well', 'inn', 'lamp', 'stall',
   'bakery', 'cart', 'market', 'lamp', 'warehouse', 'smithy',
-  'lumberyard', 'stall', 'haystack', 'lamp', 'cart', 'stall',
+  'stall', 'haystack', 'lamp', 'cart', 'stall',
 ];
+
+/** Kinds that come from the plan, so progress through it can be counted. */
+const PLANNED = new Set(TOWN_PLAN);
 
 /**
  * How much room each kind needs to itself, in world units.
@@ -52,8 +75,16 @@ export const TOWN_PLAN = [
 const FOOTPRINT = {
   well: 22, stall: 26, inn: 42, house: 34, bakery: 38, market: 46,
   warehouse: 44, smithy: 38, lumberyard: 42, lamp: 18, cart: 20,
-  signpost: 14, haystack: 22,
+  signpost: 14, haystack: 22, tent: 24, farm: 64, quarry: 46,
 };
+
+/**
+ * How far out of the centre each kind wants to be, as a multiple of the normal
+ * placement radius. Homes are happy on the edge; fields and quarries are *work*
+ * and belong out past the last house, which is also what stops a town of five
+ * buildings drawing a wheatfield through the middle of its own crossroads.
+ */
+const OUTSKIRTS = { house: 1.75, haystack: 1.75, farm: 2.4, quarry: 2.7, tent: 0.8 };
 
 const SYL_A = ['Ash', 'Bram', 'Cold', 'Dun', 'Elm', 'Fen', 'Grey', 'Har', 'Ink', 'Kel', 'Mor', 'Oak', 'Pell', 'Raven', 'Stone', 'Thorn', 'Wold'];
 const SYL_B = ['ford', 'bridge', 'cross', 'gate', 'market', 'reach', 'stead', 'wick', 'hollow', 'bury', 'mere', 'row'];
@@ -68,11 +99,18 @@ export function townName(rng, used) {
 
 // ------------------------------------------------------------------ housing
 
-/** Beds this town has built. The founding camp counts for a few. */
+/**
+ * Beds this town has. Tents count — they are where a new settlement's people
+ * actually sleep, and a town that never gets round to replacing them is a town
+ * that never grows past the size of the party that founded it.
+ */
 export function housing(town) {
-  let houses = 0;
-  for (const b of town.buildings) if (b.kind === 'house') houses++;
-  return CAMP_BEDS + houses * HOUSE_BEDS;
+  let beds = CAMP_BEDS;
+  for (const b of town.buildings) {
+    if (b.kind === 'house') beds += HOUSE_BEDS;
+    else if (b.kind === 'tent') beds += TENT_BEDS;
+  }
+  return beds;
 }
 
 /** Who lives here. Kept as a number; the renderer only ever draws a sample. */
@@ -89,14 +127,37 @@ export function totalPopulation(state) {
 
 // ----------------------------------------------------------------- building
 
+/** Is there rock within a few tiles — i.e. anything worth putting a quarry on? */
+function nearRock(state, tx, ty) {
+  for (let dy = -3; dy <= 3; dy++) {
+    for (let dx = -3; dx <= 3; dx++) {
+      const x = tx + dx, y = ty + dy;
+      if (x < 0 || y < 0 || x >= MAP.w || y >= MAP.h) continue;
+      const k = state.terrain.kind[tileIndex(x, y)];
+      if (k === T.MOUNTAIN) return true;
+    }
+  }
+  return state.terrain.kind[tileIndex(tx, ty)] === T.HILL;
+}
+
 /**
- * Can something be built on this tile? Buildings want firm, dry, off-road
- * ground — being *next* to the road is the point, being *on* it is not.
+ * Can this kind of thing be built on this tile? Buildings want firm, dry,
+ * off-road ground — being *next* to the road is the point, being *on* it is not.
+ *
+ * Two kinds argue with the terrain rather than merely tolerating it, and that is
+ * the whole reason the economy is worth having: a field has to go on ground you
+ * could plough (grass, or woodland you are willing to clear), and a quarry has
+ * to go where there is actually stone to cut.
  */
-function siteOk(state, tx, ty) {
+function siteOk(state, tx, ty, kind) {
   if (tx < 2 || ty < 2 || tx >= MAP.w - 2 || ty >= MAP.h - 2) return false;
   const i = tileIndex(tx, ty);
-  if (!buildable(state.terrain.kind[i])) return false;
+  const k = state.terrain.kind[i];
+  if (kind === 'farm') {
+    if (k !== T.GRASS && k !== T.FOREST) return false;
+  } else if (kind === 'quarry') {
+    if (!buildable(k) || !nearRock(state, tx, ty)) return false;
+  } else if (!buildable(k)) return false;
   if (state.wear[i] > ROAD_MIN * 0.9) return false;
   return true;
 }
@@ -120,7 +181,7 @@ function nearestOtherTown(state, town, x, y) {
  */
 function findPlot(state, town, kind, rng) {
   const need = FOOTPRINT[kind] || 28;
-  const outskirts = kind === 'house' || kind === 'haystack' ? 1.75 : 1;
+  const outskirts = OUTSKIRTS[kind] || 1;
   for (let attempt = 0; attempt < 110; attempt++) {
     const t = attempt / 110;
     const radius = (26 + t * (70 + town.buildings.length * 7)) * outskirts;
@@ -128,7 +189,7 @@ function findPlot(state, town, kind, rng) {
     const x = town.x + Math.cos(angle) * radius;
     const y = town.y + Math.sin(angle) * radius * 0.74;   // squashed: reads better top-down
     const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
-    if (!siteOk(state, tx, ty)) continue;
+    if (!siteOk(state, tx, ty, kind)) continue;
     // Don't build into the neighbours. The spiral reaches a long way out for a
     // big town — further than `TOWN_SPACING` in the worst case — and nothing
     // else stops one settlement's outskirts landing in the middle of another's.
@@ -139,33 +200,82 @@ function findPlot(state, town, kind, rng) {
       if (Math.hypot(b.x - x, (b.y - y) * 1.3) < gap) { clear = false; break; }
     }
     if (!clear) continue;
-    return { x: Math.round(x), y: Math.round(y) };
+    return { x: Math.round(x), y: Math.round(y), tx, ty };
   }
   return null;
+}
+
+/** How far through the plan this town is. Tents, homes and works don't count. */
+function planIndex(town) {
+  let n = 0;
+  for (const b of town.buildings) if (PLANNED.has(b.kind)) n++;
+  return n;
+}
+
+/**
+ * Is it time to break in another field?
+ *
+ * The test is about the *land*, not about today's dinner: a town asks whether
+ * everything it could possibly hunt, fish and farm still covers what it eats,
+ * with a margin. A settlement in deep forest can put that off for a long time;
+ * one on open grass has to plough almost immediately, which is exactly the
+ * difference the terrain ought to make.
+ *
+ * One at a time, always. Two half-cleared plots is two plots feeding nobody.
+ */
+function wantsField(state, town) {
+  const pop = population(town);
+  if (pop < 8) return false;
+  const fields = countKind(town, 'farm');
+  if (fields > workingFields(town)) return false;
+  if (fields >= Math.ceil(pop / 12) + 1) return false;
+  return foodCeiling(state, town) < consumption(town) * 1.35;
 }
 
 /**
  * What this town wants next.
  *
- * Housing pressure beats the plan. A town whose beds are nearly full builds a
- * house even if the plan says it is due a smithy, so the shape of a settlement
- * ends up reflecting how many people actually chose to stop there.
+ * Read top to bottom, it is a list of things that beat the build plan, in the
+ * order a settlement would actually feel them: nobody lays out a market while
+ * the town is starving, and nobody starts a well before there is anywhere to
+ * put the stone-cutters.
+ *
+ * Housing pressure sits below food but above everything else, and is still
+ * capped against the working buildings — left uncapped, a busy town becomes a
+ * housing estate with a well in it.
  */
 function nextBuild(state, town) {
-  // The well comes first, always. It is the thing that makes a patch of worn
-  // ground read as a settlement rather than as a wide spot in the road.
-  if (!town.buildings.length) return 'well';
   const free = housing(town) - population(town);
-  const trades = town.buildings.filter((b) => b.kind !== 'house').length;
-  const houses = town.buildings.length - trades;
-  // Housing pressure wins, but only up to a point. Left uncapped a busy town
-  // becomes a housing estate with a well in it: people keep arriving, beds keep
-  // running short, and the plan never gets a look in. Capping houses against
-  // trades means a town that wants to grow has to build something worth
-  // visiting first — and a town that can't afford to stops growing instead.
-  if (free < 4 && houses <= trades + 1) return 'house';
-  if (trades >= TOWN_PLAN.length) return free < 10 ? 'house' : null;
-  return TOWN_PLAN[trades];
+  const homes = countKind(town, 'house') + countKind(town, 'tent');
+  const trades = town.buildings.length - homes - countKind(town, 'farm');
+
+  // 1. Somewhere to grow food, if the country around can't keep up.
+  if (wantsField(state, town)) return 'farm';
+
+  // 2. Somewhere to sleep. A tent counts, so a founding party's own wagons buy
+  //    the town its first few minutes.
+  //
+  //    The cap against working buildings is the load-bearing half. Without it a
+  //    busy town becomes a housing estate with a well in it, and — now that a
+  //    settlement can be *blocked* on a material it has no way to get — a town
+  //    that will never afford its next building would otherwise spend the rest
+  //    of the game building homes instead. Better that it stops.
+  const canHouse = homes <= trades + 2;
+  if (free < 4 && canHouse) return 'house';
+
+  const plan = TOWN_PLAN[planIndex(town)];
+  if (!plan) return free < 10 && canHouse ? 'house' : null;
+
+  // 3. Somewhere to cut stone, if the plan has reached masonry and none is
+  //    coming in. A town with rock in reach digs; a town without any waits for
+  //    a trade run to bring some, and gets on with what housing it is allowed
+  //    in the meantime.
+  if (needsStone(plan) && stockOf(town).stone < materialsFor(plan).stone
+      && stoneCeiling(state, town) <= 0) {
+    if (hasStoneNearby(state, town)) return 'quarry';
+    return free < 10 && canHouse ? 'house' : null;
+  }
+  return plan;
 }
 
 /** Arms of road meeting at a town centre, for the HUD and for founding. */
@@ -173,42 +283,117 @@ function armsAt(state, x, y) {
   return armCount(state.wear, Math.floor(x / TILE), Math.floor(y / TILE));
 }
 
-/** Add the next building, if there's room and traffic to pay for it. */
+/**
+ * Add the next building, if there's room, labour to raise it and material to
+ * make it of.
+ *
+ * Traffic is the labour and the coin, and still escalates with the size of the
+ * place so towns slow down rather than exploding once a trunk road runs through
+ * them. Materials are flat per kind and come out of the stores — which is what
+ * makes *where* a town is matter as much as how busy its road is.
+ */
 export function growTown(state, town) {
   const kind = nextBuild(state, town);
   if (!kind) return false;
-  const n = town.buildings.length;
-  // Each building is dearer than the last, so towns slow down rather than
-  // exploding once a trunk road runs through them. Houses are cheap: a town
-  // should never be unable to shelter the people who already live in it.
-  const cost = kind === 'house' ? 6 + n * 1.6 : 10 + n * 4.5;
+  // What the escalation counts is the *town*: the buildings that make it a
+  // place. Tents were paid for long ago by whoever bought the wagon, and fields
+  // and quarries are outlying works that the town has already paid for twice
+  // over in timber and in the hands it took to break them in. Charging the
+  // escalation on those as well would mean a settlement that invested in
+  // feeding itself could never afford a market.
+  const n = town.buildings.length - countKind(town, 'tent')
+    - countKind(town, 'farm') - countKind(town, 'quarry');
+  // Homes and fields are the cheap half: a town should never be unable to
+  // shelter or feed the people who already live in it.
+  const humble = kind === 'house' || kind === 'farm';
+  const cost = humble ? 6 + n * 1.6 : kind === 'quarry' ? 10 + n * 2.5 : 10 + n * 4.5;
   if (town.traffic < cost) return false;
-  const plot = findPlot(state, town, kind, state.rng);
+  if (!hasMaterials(town, kind)) return false;
+
+  // A new house replaces a tent wherever there is one to replace: the family
+  // that has been sleeping under wagon canvas since the town was founded gets
+  // walls, on the same patch of ground. That is the visible payoff of the first
+  // load of timber, and it is why a maturing town stops looking like a camp.
+  const tentAt = kind === 'house' ? town.buildings.findIndex((b) => b.kind === 'tent') : -1;
+  const tent = tentAt >= 0 ? town.buildings[tentAt] : null;
+  const plot = tent
+    ? { x: tent.x, y: tent.y, tx: Math.floor(tent.x / TILE), ty: Math.floor(tent.y / TILE) }
+    : findPlot(state, town, kind, state.rng);
   if (!plot) { town.traffic = cost * 0.8; return false; }   // hemmed in; try later
+
   town.traffic -= cost;
-  town.buildings.push({
+  payMaterials(town, kind);
+  if (tent) town.buildings.splice(tentAt, 1);
+
+  const b = {
     kind,
     x: plot.x,
     y: plot.y,
     variant: state.rng.int(3),
     born: state.time,
-  });
-  town.radius = Math.max(town.radius, Math.hypot(plot.x - town.x, plot.y - town.y) + 18);
+  };
+  if (kind === 'farm') {
+    // Nothing grows here yet. `growth` is how far through breaking the plot in
+    // the town has got; woodland plots are slower and pay out timber when the
+    // stumps finally come out (see `advanceClearing` in economy.js).
+    b.growth = 0;
+    b.stumps = state.terrain.kind[tileIndex(plot.tx, plot.ty)] === T.FOREST ? 1 : 0;
+  }
+  town.buildings.push(b);
+  // Outlying works don't make the town itself any bigger.
+  if (kind !== 'farm' && kind !== 'quarry') {
+    town.radius = Math.max(town.radius, Math.hypot(plot.x - town.x, plot.y - town.y) + 18);
+  }
   state.events.push({ type: 'built', x: plot.x, y: plot.y, kind, town: town.id });
   return true;
 }
 
 /**
- * Natural growth.
+ * Unhitch a founding party's wagons and pitch them as tents.
  *
- * People only arrive to fill beds that exist, so a town that stops building
- * houses stops growing — and a town that keeps building them keeps generating
- * the surplus that leaves again as caravans. This is the loop that turns one
- * lucky crossroads into the busiest node on the map.
+ * This is where a town's first housing comes from, and it costs nothing but the
+ * wagons — which is the point. A caravan that stops for good has just given up
+ * its transport, and the shape that transport makes on the ground is a camp.
+ */
+export function pitchTents(state, town, wagons) {
+  for (let i = 0; i < wagons; i++) {
+    const plot = findPlot(state, town, 'tent', state.rng);
+    if (!plot) return;
+    town.buildings.push({
+      kind: 'tent',
+      x: plot.x,
+      y: plot.y,
+      variant: state.rng.int(3),
+      born: state.time,
+    });
+    state.events.push({ type: 'built', x: plot.x, y: plot.y, kind: 'tent', town: town.id });
+  }
+}
+
+/** How many seconds of food in hand a town wants before it grows at all. */
+const LARDER_SECONDS = 25;
+/** How fast a town that has run out of food loses people, per second. */
+const HUNGER_LOSS = 0.06;
+
+/**
+ * Natural growth — now gated on the larder as well as on the beds.
+ *
+ * People arrive to fill beds that exist and are fed, and not otherwise. A town
+ * that stops building houses stops growing; a town that outruns its fields
+ * stops too, and if the stores actually empty it starts shrinking. That last
+ * clause is what turns the economy into something a town can *lose* at, and it
+ * is the pressure that pushes hungry settlements to export people (see
+ * `considerEmigration`) rather than sit there starving.
  */
 export function growPopulation(state, town, dt) {
+  const stock = stockOf(town);
+  if (town.starving) {
+    town.pop = Math.max(0, town.pop - HUNGER_LOSS * dt);
+    return;
+  }
   const free = housing(town) - population(town);
   if (free <= 0) return;
+  if (stock.food < consumption(town) * LARDER_SECONDS) return;
   const rate = 0.005 * Math.min(free, 12) * (0.4 + Math.min(1, town.buildings.length / 10));
   town.pop = Math.min(housing(town), town.pop + rate * dt);
 }
@@ -230,11 +415,15 @@ export function foundTown(state, x, y) {
     founded: state.time,
     traffic: 6,
     pop: 0,          // the founding caravan's souls are added by `settle`
+    // Empty stores. Everything in them arrives with the settlers or comes off
+    // the ground around the site; nothing is granted.
+    stock: emptyStock(),
     radius: 38,
     arms: armsAt(state, x, y),
     buildings: [],
   };
   state.towns.push(town);
+  landOf(state, town);      // survey the country while we're here
   state.events.push({ type: 'founded', x: town.x, y: town.y, name: town.name });
   return town;
 }

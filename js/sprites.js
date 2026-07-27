@@ -378,6 +378,13 @@ const ITEMS = {
     px.shadeOver(x + 2, y - 1, 2, 5, p.woodDark);
     px.fill(x - 2, y + 1, 6, 1, p.woodDark);
   },
+  stone: (px, p, x, y) => {
+    // A dressed block. Squared off on purpose — a round grey lump reads as a
+    // boulder somebody is inexplicably carrying.
+    px.fill(x - 2, y - 1, 6, 5, p.stone);
+    px.fill(x - 2, y - 1, 6, 1, lighten(p.stone, 0.3));
+    px.shadeOver(x + 2, y - 1, 2, 5, p.stoneDark);
+  },
   log: (px, p, x, y) => {
     // Two log ends stacked, pale end-grain against dark bark.
     const bark = darken(p.trunk, 0.1);
@@ -505,6 +512,12 @@ export function iconSprite(name, scale = STYLE.scale) {
       px.disc(2, 5, 1.6, mix(p.woodLight, p.wheat, 0.4));
       px.set(2, 5, darken(p.trunk, 0.2));
       px.shadeOver(1, 6, 7, 1, darken(p.trunk, 0.3));
+      break;
+    case 'stone':
+      px.fill(1, 3, 7, 5, p.stone);
+      px.fill(1, 3, 7, 1, lighten(p.stone, 0.35));
+      px.shadeOver(5, 3, 3, 5, p.stoneDark);
+      px.fill(1, 5, 7, 1, p.stoneDark);              // the course line
       break;
     case 'basket':
       px.fill(2, 2, 1, 1, p.wood);                   // handle

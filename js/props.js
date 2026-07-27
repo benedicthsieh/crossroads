@@ -582,6 +582,171 @@ function stall(variant, part) {
   return { px, ax: cx, ay: h - 2, lights: [[cx, cY - 2]] };
 }
 
+/**
+ * A tent: one covered wagon, unhitched and pitched.
+ *
+ * Deliberately the *same* canvas arch and the same three hood colours as
+ * `wagonSide` — a town's first housing has to read as the wagons that arrived,
+ * not as generic camping gear. The propped wheel is the tell: it says this
+ * shape used to move, and now doesn't.
+ */
+function tent(variant) {
+  const p = pal();
+  const px = new Pix(34, 28);
+  const y = 25;                                  // ground line
+  const cx = 15;
+  const canvasC = [p.plaster, mix(p.plaster, p.wheat, 0.3), mix(p.plaster, p.cloth[7][0], 0.35)][variant % 3];
+  const canvasS = darken(canvasC, 0.26);
+
+  // The hood, straight off the wagon and sitting on the dirt.
+  const w = 22;
+  for (let i = 0; i < w; i++) {
+    const t = i / (w - 1);
+    const lift = Math.round(Math.sin(t * Math.PI) * 4);
+    const h = 8 + lift;
+    px.fill(cx - 10 + i, y - h, 1, h, canvasC);
+    px.set(cx - 10 + i, y - h, lighten(canvasC, 0.26));
+  }
+  px.shadeOver(cx + 3, y - 12, 9, 12, canvasS);          // light from the upper left
+  for (let i = 3; i < w - 2; i += 5) {                    // hoops showing through
+    const lift = Math.round(Math.sin((i / (w - 1)) * Math.PI) * 4);
+    px.fill(cx - 10 + i, y - 8 - lift + 1, 1, 7 + lift, mix(canvasC, canvasS, 0.55));
+  }
+
+  // The doorway: a dark gap with the flap pulled back to one side.
+  px.fill(cx - 3, y - 9, 6, 9, darken(canvasS, 0.55));
+  px.fill(cx - 4, y - 10, 2, 10, canvasS);
+  px.fill(cx + 2, y - 10, 2, 10, canvasS);
+
+  // Guy ropes and pegs, which is what stops it reading as a loaf of bread.
+  px.line(cx - 11, y - 9, cx - 14, y - 1, p.woodDark);
+  px.line(cx + 11, y - 9, cx + 14, y - 1, p.woodDark);
+  px.fill(cx - 15, y - 1, 2, 2, p.dirtDeep);
+  px.fill(cx + 14, y - 1, 2, 2, p.dirtDeep);
+
+  wheel(px, cx + 13, y - 4, 4, p);                       // the wagon it used to be
+  return { px, ax: cx, ay: y + 1, lights: [[cx, y - 5]] };
+}
+
+/**
+ * A quarry: the only place stone comes from.
+ *
+ * Drawn as a cut into rising ground rather than as a building, because that is
+ * what it is — the benches are stepped back so it reads as excavation, and the
+ * dressed blocks stacked at the foot are what the town is actually waiting for.
+ */
+function quarry() {
+  const p = pal();
+  const px = new Pix(46, 36);
+  const y = 33;
+  const rock = mix(p.stone, p.dirtDeep, 0.25);
+  const lit = lighten(rock, 0.26);
+  const dark = darken(rock, 0.32);
+
+  // Stepped benches, each cut further back into the hill than the last. The
+  // shadow under every lip is what makes them read as *cut* rather than as one
+  // grey lump — without it the whole thing is a boulder.
+  for (let i = 0; i < 4; i++) {
+    const bw = 34 - i * 6;
+    const bx = 6 + i * 3;
+    const by = y - 6 - i * 5;
+    px.fill(bx, by, bw, 6, i % 2 ? darken(rock, 0.16) : rock);
+    px.fill(bx, by, bw, 1, lit);                         // the lit top of the bench
+    px.fill(bx, by + 1, bw, 1, darken(rock, 0.42));      // the cut face beneath it
+    px.shadeOver(bx + bw - 5, by, 5, 6, dark);           // shaded right end
+    px.fill(bx, by, 1, 6, dark);                         // and the left cut
+  }
+  // Spoil and rubble along the working floor.
+  for (let i = 0; i < 14; i++) {
+    const sx = 4 + Math.floor(hash2(i, 3, 19) * 36);
+    const sy = y - 4 + Math.floor(hash2(i, 5, 23) * 4);
+    px.disc(sx, sy, hash2(i, 7, 29) > 0.6 ? 2 : 1.2, hash2(i, 9, 31) > 0.5 ? dark : rock);
+  }
+  // Dressed blocks, squared off and stacked ready to go.
+  const block = (bx, by) => {
+    px.fill(bx, by, 8, 5, p.stone);
+    px.fill(bx, by, 8, 1, lighten(p.stone, 0.3));
+    px.shadeOver(bx + 5, by, 3, 5, p.stoneDark);
+  };
+  block(6, y - 5);
+  block(7, y - 10);
+  block(16, y - 5);
+  // A timber derrick over the face — the one thing here that says "worked".
+  px.fill(33, y - 22, 2, 20, p.wood);
+  px.shadeOver(34, y - 22, 1, 20, p.woodDark);
+  px.line(33, y - 22, 24, y - 18, p.woodDark);
+  px.line(26, y - 18, 26, y - 12, p.woodDark);           // rope
+  px.fill(24, y - 12, 5, 4, p.stone);                    // block on the hook
+  px.fill(30, y - 2, 8, 2, p.dirtDeep);
+  return { px, ax: 23, ay: y + 1, lights: [] };
+}
+
+/**
+ * A field, at one of three stages of being broken in.
+ *
+ * The stages are the mechanic made visible: 0 is ground being cleared (stumps
+ * and scrub still in it), 1 is ploughed and sown, 2 is a crop worth eating. A
+ * town that has just decided to farm therefore *looks* like it has taken on a
+ * job, for as long as the job actually takes.
+ */
+function field(stage) {
+  const p = pal();
+  const px = new Pix(56, 30);
+  const y = 27;
+  const soil = stage === 0 ? mix(p.dirt[2], p.grass[2], 0.35) : p.dirt[1];
+  const soilDark = darken(soil, 0.22);
+
+  // The plot, drawn as furrows running away up-right so it sits in the same
+  // oblique projection everything else does.
+  for (let row = 0; row < 8; row++) {
+    const w = 46 - row * 3;
+    const rx = 4 + row * 2;
+    const ry = y - row * 2 - 1;
+    px.fill(rx, ry, w, 2, row % 2 ? soil : soilDark);
+    if (stage > 0) px.fill(rx, ry, w, 1, lighten(soil, 0.12));
+  }
+
+  if (stage === 0) {
+    // Stumps and cut brush: the ground is *being* cleared, not cleared. The
+    // stumps need a pale sawn top or they vanish into the soil they stand on —
+    // which is the whole reason this stage exists to be looked at.
+    for (let i = 0; i < 9; i++) {
+      const sx = 6 + Math.floor(hash2(i, 1, 41) * 40);
+      const sy = y - 14 + Math.floor(hash2(i, 2, 43) * 12);
+      px.fill(sx, sy, 4, 3, darken(p.trunk, 0.35));
+      px.fill(sx, sy, 4, 1, mix(p.woodLight, p.wheat, 0.5));
+      if (hash2(i, 3, 47) > 0.55) px.disc(sx + 5, sy + 1, 2, darken(p.leaf[2], 0.1));
+    }
+    px.fill(40, y - 9, 2, 8, p.wood);                    // a mattock left standing
+    px.fill(37, y - 10, 6, 2, p.stoneDark);
+  } else {
+    // Crop rows. Green shoots first, then something with ears on it.
+    const crop = stage === 1 ? p.leaf[0] : p.wheat;
+    const cropDark = stage === 1 ? p.leaf[2] : p.wheatDark;
+    for (let row = 0; row < 7; row++) {
+      const ry = y - row * 2 - 2;
+      const rx = 6 + row * 2;
+      const w = 42 - row * 3;
+      for (let i = 0; i < w; i += 3) {
+        const h = stage === 1 ? 2 : 4;
+        px.fill(rx + i, ry - h, 1, h, crop);
+        px.set(rx + i, ry - h, stage === 1 ? crop : lighten(crop, 0.25));
+        px.set(rx + i + 1, ry - h + 1, cropDark);
+      }
+    }
+  }
+
+  // A rail fence along the near edge, which is what makes the patch read as
+  // somebody's field rather than as a stain on the grass.
+  px.fill(3, y - 1, 48, 1, p.woodLight);
+  px.fill(3, y + 1, 48, 1, p.wood);
+  for (const fx of [3, 18, 33, 48]) {
+    px.fill(fx, y - 4, 2, 6, p.wood);
+    px.shadeOver(fx + 1, y - 4, 1, 6, p.woodDark);
+  }
+  return { px, ax: 28, ay: y + 2, lights: [] };
+}
+
 function well() {
   const p = pal();
   const px = new Pix(28, 30);
@@ -1069,7 +1234,9 @@ const BUILDERS = {
   pine0: () => pine(0), pine1: () => pine(1),
   house0: () => house(0), house1: () => house(1), house2: () => house(2),
   inn, bakery, well, cart, signpost, lamp, barrel, crate, haystack,
-  marketplace, warehouse, lumberyard, smithy,
+  marketplace, warehouse, lumberyard, smithy, quarry,
+  tent0: () => tent(0), tent1: () => tent(1), tent2: () => tent(2),
+  field0: () => field(0), field1: () => field(1), field2: () => field(2),
   stall0back: () => stall(0, 'back'), stall0front: () => stall(0, 'front'),
   stall1back: () => stall(1, 'back'), stall1front: () => stall(1, 'front'),
   stall2back: () => stall(2, 'back'), stall2front: () => stall(2, 'front'),
@@ -1098,8 +1265,10 @@ for (let v = 0; v < 3; v++) {
 
 const BUILDING_NAMES = new Set([
   'well', 'inn', 'bakery', 'marketplace', 'warehouse', 'lumberyard', 'smithy',
-  'cart', 'signpost', 'lamp', 'haystack', 'barrel', 'crate',
+  'cart', 'signpost', 'lamp', 'haystack', 'barrel', 'crate', 'quarry',
   'house0', 'house1', 'house2',
+  'tent0', 'tent1', 'tent2',
+  'field0', 'field1', 'field2',
   'stall0back', 'stall0front', 'stall1back', 'stall1front', 'stall2back', 'stall2front',
 ]);
 

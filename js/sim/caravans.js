@@ -19,7 +19,13 @@
 import { MAP, TILE, T, tileIndex, tileCentre, terrainCost } from './terrain.js';
 import { depositTrail, moveCost } from './roads.js';
 import { findPath } from './paths.js';
-import { townAt, TOWN_SPACING, MAX_TOWNS, foundTown, housing, population } from './towns.js';
+import {
+  townAt, TOWN_SPACING, MAX_TOWNS, foundTown, housing, population, pitchTents,
+} from './towns.js';
+import {
+  stockOf, storeCapacity, loadCargo, tradeAt, unloadCargo, cargoIcon,
+  WAGON_TIMBER, PROVISIONS,
+} from './economy.js';
 
 /** People in one covered wagon. Fixed, so `souls` and `wagons` never disagree. */
 export const SOULS_PER_WAGON = 5;
@@ -46,6 +52,14 @@ const WEAR_PER_UNIT = 0.015;
 const wearRate = (c) => WEAR_PER_UNIT * (1.6 + 0.8 * c.wagons);
 
 const GOODS = ['wheat', 'bread', 'crate', 'basket', 'log'];
+
+/** What a load of raw material looks like slung over a drover's shoulder. */
+const CARGO_ITEM = { wood: 'log', stone: 'stone', food: 'wheat' };
+function carriedItem(cargo) {
+  const icon = cargoIcon(cargo);
+  return icon === 'log' ? CARGO_ITEM.wood : icon === 'stone' ? CARGO_ITEM.stone
+    : icon === 'wheat' ? CARGO_ITEM.food : null;
+}
 
 /**
  * How many wagons a caravan sets out with, weighted hard toward one.
@@ -269,6 +283,8 @@ function makeCaravan(state, x, y, wagons, origin) {
     wagons,
     souls: wagons * SOULS_PER_WAGON,
     carry: rng.pick(GOODS),
+    /** Raw material aboard, `{food, wood, stone}`. Only trade runs carry any. */
+    cargo: null,
     goal: null,
     legs: null,
     leg: 0,
@@ -329,6 +345,11 @@ export function spawnTownCaravan(state, town) {
   if (town.pop - take < 6) return null;
   town.pop -= take;
   const c = makeCaravan(state, town.x, town.y, wagons, town.id);
+  // Emigrants eat on the road, and they eat out of the stores of the town that
+  // is sending them away. A hungry town therefore pays to export people —
+  // which is right, and is what stops famine emigration being free.
+  const stock = stockOf(town);
+  stock.food = Math.max(0, stock.food - take * PROVISIONS * 0.5);
   town.traffic += 1;
   retarget(state, c);
   return c;
@@ -359,6 +380,11 @@ export function spawnTradeCaravan(state, town) {
   const c = makeCaravan(state, town.x, town.y, wagons, town.id);
   c.home = town.id;
   c.goal = 'trade';
+  // Load up with whatever the town has most to spare. An empty-handed run still
+  // happens — a poor town trades in errands and gossip — but a rich one puts its
+  // surplus on the road, and that surplus is what the next town builds with.
+  c.cargo = loadCargo(town, wagons);
+  c.carry = carriedItem(c.cargo) || c.carry;
   // One or two stops, nearest-first, then home again.
   const stops = partners
     .map((t) => ({ t, d: Math.hypot(t.x - town.x, t.y - town.y) }))
@@ -439,10 +465,28 @@ function repath(state, c) {
   state.stats.paths++;
 }
 
-/** Everyone aboard gets out and stays. The caravan itself is gone. */
-function settle(state, c, town) {
+/**
+ * Everyone aboard gets out and stays. The caravan itself is gone.
+ *
+ * What happens to the *wagons* is the interesting half. A founding party pitches
+ * them: an unhitched covered wagon is a tent, and those tents are the new
+ * town's entire housing stock until it can cut enough timber to replace them.
+ * A caravan joining a town that already exists has no such need, so its wagons
+ * are broken up for their timber instead — which is why immigration visibly
+ * pays for the next house.
+ *
+ * Either way the settlers' own provisions go into the stores. A town's first
+ * meal comes out of the sacks the founders walked in with.
+ */
+function settle(state, c, town, founded = false) {
   town.pop += c.souls;
   town.traffic += 2 + c.wagons;
+  const stock = stockOf(town);
+  const cap = storeCapacity(town);
+  stock.food = Math.min(cap, stock.food + c.souls * PROVISIONS);
+  if (founded) pitchTents(state, town, c.wagons);
+  else stock.wood = Math.min(cap, stock.wood + c.wagons * WAGON_TIMBER);
+  if (c.cargo) unloadCargo(town, c.cargo);
   state.stats.settled += c.souls;
   state.events.push({
     type: 'settled', x: town.x, y: town.y, souls: c.souls, name: town.name,
@@ -483,7 +527,7 @@ function arriveLeg(state, c) {
     const clash = state.towns.some((t) => Math.hypot(t.x - c.x, t.y - c.y) < TOWN_SPACING);
     if (!clash && state.towns.length < MAX_TOWNS) {
       const town = foundTown(state, c.x, c.y);
-      if (town) { settle(state, c, town); return; }
+      if (town) { settle(state, c, town, true); return; }
     }
     // The frontier is stale or taken. Stand down from founding for a while, or
     // this caravan re-picks the same doomed junction from where it stands and
@@ -495,11 +539,13 @@ function arriveLeg(state, c) {
 
   if (leg && leg.kind === 'home') {
     // A trade run coming back. Its people rejoin the town they left, so the
-    // circuit costs the map nothing — unlike emigration, which is one-way.
+    // circuit costs the map nothing — unlike emigration, which is one-way — and
+    // whatever it picked up on the road goes into the stores.
     const town = state.towns.find((t) => t.id === leg.townId);
     if (town) {
       town.pop += c.souls;
       town.traffic += 2;
+      if (c.cargo) unloadCargo(town, c.cargo);
       state.stats.trades++;
     }
     c.done = true;
@@ -512,7 +558,16 @@ function arriveLeg(state, c) {
       town.traffic += 2;
       state.stats.trades++;
       const give = c.carry;
-      c.carry = state.rng.pick(GOODS);
+      if (c.cargo) {
+        // Real goods change hands: part of the load comes off here, and this
+        // town's own surplus goes on for the next leg. This is the only way
+        // stone ever reaches a settlement with no rock within a day's walk, and
+        // it is what makes a trade road worth more than the traffic on it.
+        tradeAt(town, c.cargo);
+        c.carry = carriedItem(c.cargo) || state.rng.pick(GOODS);
+      } else {
+        c.carry = state.rng.pick(GOODS);
+      }
       state.events.push({ type: 'trade', x: c.x, y: c.y, give: give || 'coin', get: c.carry });
     }
     c.rest = state.rng.range(2.5, 6);

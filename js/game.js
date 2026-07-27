@@ -10,6 +10,7 @@ import { STYLE } from './palette.js';
 import { createState, step, snapshot, totalPopulation } from './sim/state.js';
 import { WORLD, TERRAIN_NAMES, MAP, TILE } from './sim/terrain.js';
 import { housing, population } from './sim/towns.js';
+import { stockOf, countKind, workingFields, consumption } from './sim/economy.js';
 import { saveLocal, loadLocal, hasLocal, toShareCode, fromShareCode, saveSize } from './sim/save.js';
 import {
   makeCamera, resizeCamera, applyTransform, toWorld, clampCamera,
@@ -317,6 +318,29 @@ function clock(seconds) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+/** Everything every town has in its stores, for the map-wide summary. */
+function stores(st) {
+  let food = 0, wood = 0, stone = 0;
+  for (const t of st.towns) {
+    const s = stockOf(t);
+    food += s.food;
+    wood += s.wood;
+    stone += s.stone;
+  }
+  return `${Math.round(food)}f ${Math.round(wood)}w ${Math.round(stone)}s`;
+}
+
+/** Fields in production, and fields still being broken in. */
+function fields(st) {
+  let working = 0, clearing = 0;
+  for (const t of st.towns) {
+    const done = workingFields(t);
+    working += done;
+    clearing += countKind(t, 'farm') - done;
+  }
+  return clearing ? `${working} (+${clearing} clearing)` : String(working);
+}
+
 const terrainUnder = (x, y) => TERRAIN_NAMES[state.terrain.kind[
   Math.min(MAP.h - 1, Math.floor(y / TILE)) * MAP.w + Math.min(MAP.w - 1, Math.floor(x / TILE))
 ]];
@@ -332,6 +356,8 @@ function refreshHud() {
   set('statTravelers', state.stats.settled);
   set('statRoads', state.stats.roadTiles);
   set('statTrades', state.stats.trades);
+  set('statStores', stores(state));
+  set('statFields', fields(state));
   set('statFps', fps);
 
   const card = document.getElementById('card');
@@ -350,7 +376,7 @@ function refreshHud() {
               : 'leaving by the far road';
     set('cardName', `${c.home ? 'Trade run' : 'Caravan'} #${c.id}`);
     set('cardRole', `${c.wagons} wagon${c.wagons === 1 ? '' : 's'}, ${c.souls} souls`);
-    set('cardItem', `${heading} · crossing ${terrainUnder(c.x, c.y)}${c.carry ? ` · carrying ${c.carry}` : ''}`);
+    set('cardItem', `${heading} · crossing ${terrainUnder(c.x, c.y)}${load(c)}`);
   } else if (p) {
     card.hidden = false;
     const town = state.towns.find((t) => t.id === p.town);
@@ -360,6 +386,18 @@ function refreshHud() {
   } else {
     card.hidden = true;
   }
+}
+
+/** What a caravan is hauling: real material first, then the sack it's holding. */
+function load(c) {
+  if (c.cargo) {
+    const parts = [];
+    for (const [res, n] of Object.entries(c.cargo)) {
+      if (n >= 0.5) parts.push(`${Math.round(n)} ${res}`);
+    }
+    if (parts.length) return ` · hauling ${parts.join(', ')}`;
+  }
+  return c.carry ? ` · carrying ${c.carry}` : '';
 }
 
 let lastTownCount = -1;
@@ -374,8 +412,18 @@ function refreshTowns() {
   for (const t of state.towns) {
     const li = document.createElement('li');
     const beds = housing(t) - population(t);
+    const s = stockOf(t);
+    const tents = countKind(t, 'tent');
+    // Days of food in hand rather than raw stock: "9 food" means nothing, "the
+    // larder is nearly out" means everything.
+    const larder = consumption(t) > 0 ? s.food / consumption(t) : 999;
+    const food = t.starving ? '<b>starving</b>'
+      : larder < 30 ? 'short of food' : `${Math.round(s.food)} food`;
     li.innerHTML = `<b>${t.name}</b> — ${population(t)} people, ${t.buildings.length}
-      building${t.buildings.length === 1 ? '' : 's'}, ${beds > 0 ? `${beds} bed${beds === 1 ? '' : 's'} free` : 'full'}`;
+      building${t.buildings.length === 1 ? '' : 's'}, ${beds > 0 ? `${beds} bed${beds === 1 ? '' : 's'} free` : 'full'}
+      <span class="tiny">${food} · ${Math.round(s.wood)} wood · ${Math.round(s.stone)} stone${
+  tents ? ` · ${tents} tent${tents === 1 ? '' : 's'}` : ''}${
+  workingFields(t) ? ` · ${workingFields(t)} field${workingFields(t) === 1 ? '' : 's'}` : ''}</span>`;
     li.style.cursor = 'pointer';
     li.onclick = () => {
       cam.follow = null;

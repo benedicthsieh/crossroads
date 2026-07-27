@@ -27,6 +27,21 @@ import { buildScenery, clearAround, trampled } from './scenery.js';
 
 // ------------------------------------------------------------- buildings
 
+/**
+ * Which of the three field sprites a plot is showing.
+ *
+ * Clearing runs 0 → 1 in the sim; the last stretch of it is drawn as ploughed
+ * and sown rather than as scrub, so a field that is nearly ready looks nearly
+ * ready. Once it is in production it stays at the ripe stage — the game has no
+ * seasons, and a field that flickered between sown and harvested would read as
+ * a bug rather than as a year passing.
+ */
+function fieldStage(b) {
+  const g = b.growth || 0;
+  if (g >= 1) return 2;
+  return g < 0.55 ? 0 : 1;
+}
+
 /** One town building becomes one or two props. Stalls are two by design. */
 function buildingProps(b) {
   switch (b.kind) {
@@ -42,6 +57,20 @@ function buildingProps(b) {
     }
     case 'house':
       return [{ name: `house${b.variant % 3}`, x: b.x, y: b.y, building: true }];
+    case 'tent':
+      return [{ name: `tent${b.variant % 3}`, x: b.x, y: b.y, building: true }];
+    case 'farm':
+      // The sim's `growth` (0 while the plot is being cleared, 1 once it is in
+      // production) picks the stage. Fields are drawn low in the sort order —
+      // they are ground, and a villager standing in one should be in front of
+      // the crop rather than behind them.
+      return [{
+        name: `field${fieldStage(b)}`,
+        x: b.x,
+        y: b.y,
+        sortY: b.y - 10,
+        building: true,
+      }];
     case 'market':
       return [{ name: 'marketplace', x: b.x, y: b.y, building: true }];
     default:
@@ -50,7 +79,9 @@ function buildingProps(b) {
 }
 
 const depthOf = (q) => (q.sortY != null ? q.sortY : q.y);
-const SHADOWED = /tree|pine|crag|house|inn|bakery|stall|well|cart|haystack|market|warehouse|lumber|smithy|wagon/;
+// Fields are deliberately not in here: a field is ground, and ground does not
+// cast a shadow onto itself.
+const SHADOWED = /tree|pine|crag|house|inn|bakery|stall|well|cart|haystack|market|warehouse|lumber|smithy|wagon|tent|quarry/;
 
 // ------------------------------------------------------------ the renderer
 
@@ -141,6 +172,10 @@ export function createRenderer(state) {
         sparkle(e.x, e.y - 14, 7);
       } else if (e.type === 'built') {
         sparkle(e.x, e.y - 8, 12);
+        structural = true;
+      } else if (e.type === 'field') {
+        // A plot moved on a stage: different sprite, and the scenery it clears
+        // changes with it. No sparkle — this is slow work, not an event.
         structural = true;
       } else if (e.type === 'founded') {
         sparkle(e.x, e.y - 6, 20);

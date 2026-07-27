@@ -27,8 +27,15 @@ wagon, up to three wagons. That is a scale decision, not a flavour one: a
 hundred people crossing the map as a hundred sprites reads as an ant farm, and
 as twenty wagons it reads as traffic. Every caravan scores its options at the
 end of each leg (join a town, found one, push on to the far border) and takes
-the best. `docs/EMERGENCE.md` is the written-up version of those behaviours and
-is the right place to start if you are changing how the map settles.
+the best.
+
+A town that gets founded then has to live off the ground it landed on: the
+founding party's wagons become its first tents, timber comes out of the forest,
+stone out of a quarry somebody had to dig, and everybody eats every second —
+from the woods and the river at first, and from cleared fields once the woods
+can't keep up. `docs/EMERGENCE.md` is the written-up version of all of those
+behaviours and is the right place to start if you are changing how the map
+settles.
 
 `demo/` is the previous life of this repo — an art-style test with a hand-placed
 town and live palette / outline / rim-light knobs. It still runs, it is still the
@@ -56,6 +63,7 @@ js/sim/             GAME STATE. No DOM, no canvas, no Math.random().
   caravans.js       wagon trains, the objective function, and depositTrail()
   residents.js      the sampled crowd inside a town
   towns.js          founding, building, housing and population
+  economy.js        food/wood/stone: what a town can reach, and what it does all day
   state.js          createState / step / snapshot / restore
   save.js           localStorage + pasteable share codes
 
@@ -95,6 +103,13 @@ it (see below). Adding a `Math.random()` inside `js/sim/` silently breaks that.
 **Terrain is derived, never stored.** `generateTerrain(seed)` is pure. Snapshots
 store the seed, not 117,600 tiles. Same for gates (`findGates`) and scenery
 (`buildScenery`). The only thing the sim mutates about the map is `wear`.
+
+**Terrain is derived; so is a town's survey of it.** `surveyLand()` counts what
+is within reach of a town — forest, water, rock, open ground — and it is a pure
+function of the seed and the town's position, so it is cached on the town at
+founding and *rebuilt on restore*, never serialised. The stores (`town.stock`)
+are real state and are saved; the land is not. If you add anything else derived
+from the map, put it on the same side of that line.
 
 **Population is a number, not a crowd.** `town.pop` is who lives there;
 `js/sim/residents.js` walks a capped *sample* of them around. That gap is the
@@ -142,8 +157,12 @@ leverage:
 | `sim/roads.js` | `WEAR_PER_UNIT` (in caravans.js), `WEAR_FULL` | how fast roads form |
 | `sim/roads.js` | `DECAY_HALFLIFE`, `ROAD_COST` | how long an unused road survives; what a finished one costs |
 | `sim/towns.js` | `TOWN_SPACING`, `MAX_TOWNS` | how far apart towns must be, and the hard cap |
-| `sim/towns.js` | `HOUSE_BEDS`, the house cap in `nextBuild` | housing supply, and how much of a town is homes |
-| `sim/towns.js` | `FOOTPRINT`, the `findPlot` radius | how much a town sprawls |
+| `sim/towns.js` | `HOUSE_BEDS`, `TENT_BEDS`, the house cap in `nextBuild` | housing supply, and how much of a town is homes |
+| `sim/towns.js` | `FOOTPRINT`, `OUTSKIRTS`, the `findPlot` radius | how much a town sprawls, and how far out its fields go |
+| `sim/economy.js` | `FOOD_PER_PERSON`, `HUNT_CEILING`, `FISH_CEILING` | how big a town gets before it must farm |
+| `sim/economy.js` | `FIELD_YIELD`, `CLEAR_RATE` | what a field is worth, and what it costs to start |
+| `sim/economy.js` | `MATERIALS` | what each building is made of — and therefore the tier line |
+| `sim/economy.js` | `WOOD_PER_TILE`, `QUARRY_YIELD`, `STORE_BASE` | how fast a town can build at all |
 | `sim/state.js` | `FOUND_WEAR`, the rate in `considerTrade` | how mature a junction must be to settle; how busy the roads look |
 | `props.js` | `UNIT.building` | how much ground a building sprite covers |
 
@@ -177,6 +196,15 @@ Playwright — Chromium is preinstalled in the cloud environment at
   original seed.
 - **Towns converge**: 4–5 towns after ~5 real minutes at 16×, and a town that is
   mostly houses with a well in it means the cap in `nextBuild` has drifted.
+- **The economy is not stuck.** The sim runs headlessly under plain `node` (no
+  DOM anywhere in `js/sim/`), which is far faster than driving the page — import
+  `js/sim/state.js`, step it for 40 simulated minutes, and print each town's
+  stock and building counts. What you want to see: tents converted to houses
+  inside the first few minutes, three to six fields per town, a quarry wherever
+  there is rock, and a well in most towns. What you do not want: `stone` stuck
+  at 0 everywhere (nothing is quarrying), stores pinned at the store cap for the
+  whole run (materials have stopped being a constraint), or a town of a dozen
+  houses and three trades (the plan has stalled on a material it cannot get).
 - **A caravan can always get somewhere.** The failure mode to watch for is a
   caravan that decides, arrives, is refused, and re-decides in the same tick —
   it shows up as `state.stats.paths` climbing into the tens of thousands. Both
@@ -193,9 +221,13 @@ poking at a running game from the console or from Playwright.
 - Town buildings can overlap slightly; the spacing check is a squashed-circle
   distance, not the actual sprite footprint.
 - Caravans don't avoid each other. At a busy town gate they overlap.
-- Residents wander between buildings; they don't have jobs. The demo's
-  step-script behaviours (`demo/js/agents.js`) are the obvious thing to port
-  when towns need an internal economy.
+- Residents wander between buildings; they don't have jobs. The town's *labour*
+  is a number in `economy.js` — so many hands hunting, so many at the woodpile —
+  and none of it is attached to the figures you can see. Fields and quarries are
+  buildings, so residents already walk out to them, but a villager standing in a
+  wheatfield is not the person farming it. The demo's step-script behaviours
+  (`demo/js/agents.js`) are the obvious thing to port if that gap starts to
+  bother anyone.
 - Nothing culls a caravan whose path fails repeatedly; they beeline instead.
 - A caravan that leaves by a far gate takes its people off the map for good.
   Population therefore leaks out over a long session, and towns refill from

@@ -22,6 +22,7 @@ different scales.
 | --- | --- | --- | --- |
 | **Caravan** | `js/sim/caravans.js` | Where to go next, and whether to stop for good | Once per leg |
 | **Town** | `js/sim/towns.js` | What to build next; when to send people away, and whether they come back | Once a second |
+| **Town's economy** | `js/sim/economy.js` | What its people spend the day doing | Once a second |
 | **Resident** | `js/sim/residents.js` | Which building to walk to | Once per errand |
 
 A caravan that has a `home` is on a trade circuit and does not re-decide — a
@@ -194,14 +195,113 @@ it and it kept having to build somewhere to put them.
 growPopulation: pop rises only while free beds exist
 ```
 
-People arrive to fill beds that exist and not otherwise. So a town that stops
-building houses stops growing, and a town that keeps building them keeps
-producing the surplus that leaves again as caravans. This is the loop that turns
-one lucky crossroads into the busiest node on the map:
+People arrive to fill beds that exist and are *fed*, and not otherwise. So a
+town that stops building houses stops growing, a town that outruns its fields
+stops too, and a town that keeps up with both keeps producing the surplus that
+leaves again as caravans. This is the loop that turns one lucky crossroads into
+the busiest node on the map:
 
 ```
-traffic → buildings → beds → population → surplus → caravans → traffic
+traffic → buildings → beds  ─┐
+                             ├→ population → surplus → caravans → traffic
+land → labour → food ────────┘
 ```
+
+The left-hand branches are the two halves of the same gate, and which one binds
+tells you what kind of place you are looking at. A town short of beds and swimming
+in food is on a quiet spur and has not earned its next building. A town with
+empty houses and an empty larder is on good road and bad ground.
+
+### The tents are the wagons
+
+A town's first housing is not built. It arrives: a founding caravan unhitches
+its covered wagons and pitches them, one tent per wagon, five beds each. That is
+the entire reason a brand new settlement is a settlement at all rather than a
+patch of worn grass — and it means the size of the founding party literally is
+the size of the first camp.
+
+Timber houses then replace tents *one at a time, on the same plot*
+(`growTown`). A town you are watching therefore visibly matures: the canvas
+comes down, walls go up on the same square of ground, and the last tent
+disappearing is a much better signal that a place has made it than any number in
+the panel.
+
+Caravans that *join* a town instead of founding one do not pitch anything — the
+vacancy rule that gates joining would be meaningless if every arrival brought
+its own bed. Their wagons are broken up for timber, and their people's
+provisions go in the stores. Immigration visibly pays for the next house.
+
+### Buildings are made of somewhere
+
+Traffic used to buy everything. It still buys the *labour* — and still escalates
+with the size of the town, so settlements slow down rather than exploding — but
+buildings now also cost material, and material comes off the ground the town
+happens to be standing on (`js/sim/economy.js`).
+
+| | Comes from | Gate |
+| --- | --- | --- |
+| **Wood** | forest in reach, plus a trickle from scrub on open ground | none — nothing may hard-stall |
+| **Stone** | mountain and hill | **a quarry has to be built first**, out of wood |
+| **Food** | hunting, fishing, farming | eaten continuously by everybody |
+
+The tier line runs straight through `TOWN_PLAN`. Stall, signpost, lumberyard and
+inn are timber; the well, lamps, bakery, market, warehouse and smithy are
+masonry, and none of them can be started until stone is actually coming in. So
+the well — which used to be the first building in the game, unconditionally — is
+now the moment a camp becomes a town, and it is *earned*: somebody had to cut
+twenty-two wood, put up a quarry against the nearest rock, and cut stone.
+
+The interesting case is a town with no rock within reach at all. It cannot
+quarry, so `nextBuild` falls through to housing and it stays a village of homes
+and fields — until a trade run turns up with stone in the back of a wagon. That
+happens on its own, and watching a market get built in a settlement that has
+never seen a mountain is the clearest thing in the game that trade is real.
+
+### Everybody eats
+
+`FOOD_PER_PERSON` is subtracted every second for every soul. Against that sit
+three sources, and they are deliberately not interchangeable:
+
+```
+hunting   0.045 food per worker-second, capped by forest in reach
+fishing   0.050                        , capped by water in reach
+farming   0.150                        , capped by fields you have cleared
+```
+
+Hunting and fishing are free and immediate, and the ceilings are low on purpose:
+the wild feeds a hamlet and never a city. Farming is three times the yield per
+pair of hands and scales with how many fields exist — but a field has to be
+*broken in* first, and clearing takes the same hands that would otherwise be
+feeding people. A town that decides to farm gets hungrier before it gets fed.
+Woodland plots are slower still, and pay out a load of timber when the stumps
+finally come out.
+
+Labour is allocated in one fixed order every upkeep tick — clearing, then food,
+then materials — with each stage taking only as many hands as it can use. That
+ordering is the whole of a town's economic "AI", and it produces what you want
+without anything resembling a planner: a hungry town abandons the woodpile, a
+fed one goes back to it, and a town with a plot half-cleared does both a little
+worse until it comes in.
+
+Two clauses close the loop. Population only grows while there is a real larder
+in hand, so a town that outruns its fields simply stops. And a town that
+actually empties its stores *shrinks*, and starts pushing caravans out
+regardless of how full its beds are — which is how a badly sited settlement
+seeds a better one somewhere else instead of sitting there starving.
+
+### Trade moves material, not just people
+
+A trade run now loads up with whatever its home town has most to spare, drops
+part of the load at each stop, picks up that town's surplus for the next leg,
+and unloads the rest when it gets home (`loadCargo` / `tradeAt` /
+`unloadCargo`). The caravan card in the panel shows what is actually in the
+wagons.
+
+This is what makes the road network worth something in material terms rather
+than only in traffic: a quarry town exports stone, a forest town exports timber,
+and a town on open grass with a river in it exports food and buys both. Nothing
+assigns those roles — they fall straight out of `surveyLand`, which is a pure
+function of the seed and where somebody happened to stop.
 
 ### Sprawl is deliberate
 
@@ -256,8 +356,17 @@ Things worth watching for, in roughly the order they happen:
 - **The first town.** Almost always on a ford or a pass junction, and almost
   always founded by a border caravan that has walked far enough for its
   wanderlust to have decayed.
+- **The camp.** For the first minute or two the new town is three tents and a
+  stall, because tents are what the founding party arrived in. Watch for the
+  first timber house going up *where a tent was*.
+- **The first field.** Whatever the town could hunt and fish stops covering what
+  it eats, and a plot appears out past the last house: scrub and stumps first,
+  then furrows, then wheat. The town is measurably poorer while that is
+  happening.
 - **The trade road.** Once two towns exist, emigrant caravans start running
   between them, and a road appears that no border caravan would ever have worn.
+  Trade runs carry real material along it, so this is also the moment a town
+  with no rock in reach gets its first stone.
 - **Settling down.** Frontier pressure drops, towns fill their beds, caravans
   spend longer on the road looking for somewhere with room. The map stops
   changing shape and starts thickening.
@@ -276,8 +385,16 @@ decide what they look like.
 | `sim/caravans.js` | `ROAM_RANGE` | how far a caravan travels before it looks to settle |
 | `sim/caravans.js` | `BORDER_BASE`, the slack curve | how fast immigration tapers |
 | `sim/towns.js` | `TOWN_SPACING` | how far apart settlements must be |
-| `sim/towns.js` | `HOUSE_BEDS`, `EMIGRATE_FULL` | how much population a town holds before it exports |
+| `sim/towns.js` | `HOUSE_BEDS`, `TENT_BEDS`, `EMIGRATE_FULL` | how much population a town holds before it exports |
 | `sim/state.js` | the rate in `considerTrade` | how busy the roads between towns look |
+| `sim/economy.js` | `FOOD_PER_PERSON` | the size of everything, really — it sets what a field is worth |
+| `sim/economy.js` | `HUNT_CEILING`, `FISH_CEILING` | how big a town can get before it has to farm |
+| `sim/economy.js` | `FIELD_YIELD`, `PER_WORKER.farm` | how much a cleared field is worth, and how many hands it takes |
+| `sim/economy.js` | `CLEAR_RATE`, `STUMP_PENALTY` | how long a field costs before it pays |
+| `sim/economy.js` | `MATERIALS` | the tier line: anything with stone in it needs a quarry first |
+| `sim/economy.js` | `WOOD_PER_TILE`, `SCRUB_SHARE`, `QUARRY_YIELD` | how fast a town can build at all |
+| `sim/economy.js` | `STORE_BASE`, `STORE_PER_WAREHOUSE` | how much a town can bank toward a big building |
+| `sim/economy.js` | `WAGON_LOAD`, `TRADE_RESERVE` | how much material a trade circuit actually moves |
 | `sim/towns.js` | `FOOTPRINT`, the `findPlot` radius | how much a town sprawls |
 | `props.js` | `UNIT.building` | how much ground a building sprite covers |
 | `sim/roads.js` | `WEAR_FULL`, `DECAY_HALFLIFE` | how fast roads form and how long they last |

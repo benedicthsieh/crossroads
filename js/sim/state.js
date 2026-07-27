@@ -20,8 +20,9 @@ import {
   updateCaravans, creditPassers, MAX_CARAVANS,
 } from './caravans.js';
 import { updateResidents, balanceResidents } from './residents.js';
+import { produce, emptyStock, landOf } from './economy.js';
 
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 export { WORLD, MAP, TILE };
 
 /** How full a town has to be before its surplus starts leaving as caravans. */
@@ -90,6 +91,9 @@ export function step(state, dt) {
     creditPassers(state);
     decayWear(state.wear, elapsed);
     for (const town of state.towns) {
+      // Work first, then spend. A town that has just cut its last log should be
+      // able to put the house up in the same second it finished cutting.
+      produce(state, town, elapsed);
       growTown(state, town);
       growPopulation(state, town, elapsed);
       considerEmigration(state, town);
@@ -127,10 +131,15 @@ export function step(state, dt) {
 function considerEmigration(state, town) {
   if (state.caravans.length >= MAX_CARAVANS) return;
   const beds = housing(town);
-  if (population(town) < beds * EMIGRATE_FULL) return;
+  const crowded = population(town) >= beds * EMIGRATE_FULL;
+  // Hunger is the other reason to leave, and it does not wait for a full house.
+  // A settlement that has outrun its fields exports people until it can feed the
+  // ones that stay — which is how a bad site seeds a better one somewhere else.
+  if (!crowded && !town.starving) return;
   if (town.buildings.length < 3) return;
   const crowding = population(town) / Math.max(1, beds);
-  if (state.rng.chance(0.02 * crowding)) spawnTownCaravan(state, town);
+  const urge = town.starving ? 0.05 : 0.02 * crowding;
+  if (state.rng.chance(urge)) spawnTownCaravan(state, town);
 }
 
 /**
@@ -146,7 +155,10 @@ function considerTrade(state, town) {
   if (state.caravans.length >= MAX_CARAVANS) return;
   if (state.towns.length < 2) return;
   if (town.buildings.length < 4) return;
-  if (population(town) < 25) return;
+  // Lower than it used to be, and deliberately so: a trade run is now the only
+  // way stone reaches a town with no rock in reach, so the map cannot afford to
+  // wait for everyone to be prosperous before anyone sets out.
+  if (population(town) < 18) return;
   // Busier towns trade more, so a trunk-road town visibly out-trades a quiet one.
   const rate = 0.010 + 0.0012 * Math.min(12, town.buildings.length);
   if (state.rng.chance(rate)) spawnTradeCaravan(state, town);
@@ -215,10 +227,17 @@ function decodeWear(b64, out) {
 
 // -------------------------------------------------------- snapshot / restore
 
+/** Round every field of a small numeric record. Keeps saves short and honest. */
+function round1(o) {
+  const out = {};
+  for (const k of Object.keys(o)) out[k] = Math.round(o[k] * 10) / 10;
+  return out;
+}
+
 /**
  * A complete, JSON-serialisable picture of the game.
- * Deliberately excludes anything derivable: terrain, gates and in-flight paths
- * are all rebuilt on restore.
+ * Deliberately excludes anything derivable: terrain, gates, a town's survey of
+ * the land around it, and in-flight paths are all rebuilt on restore.
  */
 export function snapshot(state) {
   return {
@@ -234,8 +253,15 @@ export function snapshot(state) {
       id: t.id, name: t.name, x: t.x, y: t.y, founded: Math.round(t.founded),
       traffic: Math.round(t.traffic * 10) / 10, pop: Math.round(t.pop * 10) / 10,
       radius: Math.round(t.radius), arms: t.arms,
+      // The stores are real state — unlike the *land*, which is a pure function
+      // of the seed and the town's position and is surveyed again on restore.
+      stock: round1(t.stock || emptyStock()),
       buildings: t.buildings.map((b) => ({
         kind: b.kind, x: b.x, y: b.y, variant: b.variant, born: Math.round(b.born),
+        // Fields only. How far through breaking the plot in the town has got,
+        // and whether it still has stumps to pull.
+        growth: b.growth != null ? Math.round(b.growth * 1000) / 1000 : undefined,
+        stumps: b.stumps || undefined,
       })),
     })),
     caravans: state.caravans.map((c) => ({
@@ -245,6 +271,7 @@ export function snapshot(state) {
       walked: Math.round(c.walked * 10) / 10,
       speed: Math.round(c.speed * 10) / 10,
       wagons: c.wagons, souls: c.souls, carry: c.carry, goal: c.goal,
+      cargo: c.cargo ? round1(c.cargo) : undefined,
       legs: c.legs, leg: c.leg, home: c.home,
       // Persisted so a reloaded caravan doesn't immediately re-pick the
       // junction it was just turned away from.
@@ -278,8 +305,14 @@ export function restore(snap) {
   Object.assign(state.timers, snap.timers || {});
   decodeWear(snap.wear || '', state.wear);
   state.towns = (snap.towns || []).map((t) => ({
-    pop: 0, ...t, buildings: [...(t.buildings || [])],
+    pop: 0, ...t,
+    stock: { ...emptyStock(), ...(t.stock || {}) },
+    buildings: [...(t.buildings || [])],
   }));
+  // Survey each town's country again rather than storing it: the land is a pure
+  // function of the seed and where the town sits, so a save has no business
+  // carrying it.
+  for (const town of state.towns) landOf(state, town);
   state.caravans = (snap.caravans || []).map((c) => ({
     ...c,
     path: null,     // recomputed on the caravan's next tick
