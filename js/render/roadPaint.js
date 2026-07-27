@@ -239,16 +239,16 @@ function markDirty(layer, i) {
 }
 
 /**
- * A tile a traveller just scuffed, plus the neighbours whose edge pixels sample
- * it. The spread is what stops a fresh track showing up as a row of hard-edged
- * squares, and it is only needed for *sudden* changes.
+ * A tile whose wear moved, plus the neighbours whose edge pixels sample it.
+ * The spread is what stops a change showing up as a row of hard-edged squares.
  *
- * The decay sweep pointedly does not use this. Fade moves every tile by the
- * same factor, so a tile that has drifted past EPS sits among neighbours that
- * have drifted by the same amount and are about to be repainted on their own
- * account. Spreading each sweep hit across five tiles quintupled the repaint
- * bill to correct an error bounded by EPS — which is, by construction, the
- * amount nobody can see.
+ * Worth knowing before trying to save the four extra marks: skipping them for
+ * decay looks safe — fade is uniform, so a tile past EPS sits among neighbours
+ * that faded by the same factor — but it is not, and it does not pay. A bright
+ * road tile crosses EPS several times as often as its faint verge, so the verge
+ * stays chronically stale rather than catching up. Measured against a
+ * from-scratch repaint it took the standing difference from 0.36% of pixels to
+ * 0.47%, and the frame cost it saved was inside the noise. Kept.
  */
 function markTile(layer, i) {
   markDirty(layer, i);
@@ -342,7 +342,7 @@ export function updateRoadLayer(layer, state, all = false) {
     const y0 = layer.sweepRow;
     const y1 = Math.min(MAP.h, y0 + rows);
     for (let i = y0 * MAP.w; i < y1 * MAP.w; i++) {
-      if (Math.abs(wear[i] - layer.painted[i]) > EPS) markDirty(layer, i);
+      if (Math.abs(wear[i] - layer.painted[i]) > EPS) markTile(layer, i);
     }
     layer.sweepRow = y1 >= MAP.h ? 0 : y1;
   }

@@ -128,9 +128,8 @@ logged — it moves every tile at once, so a background sweep covers a
 thirty-second of the map per frame instead, and `EPS` now gates only that.
 Painted tiles are uploaded as short runs along a tile row rather than as one
 rectangle around all of them; the bounding box of twenty caravans is most of the
-map. Wear is sampled bilinearly, so a *deposit* marks its neighbours dirty too —
-a sweep hit does not, because its neighbours faded by the same amount and are
-about to be swept anyway. See `docs/PERFORMANCE.md`.
+map. Wear is still sampled bilinearly, so touching one tile marks its neighbours
+dirty too, on both paths. See `docs/PERFORMANCE.md`.
 
 ## Tuning knobs
 

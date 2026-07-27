@@ -79,11 +79,15 @@ Measured at ~6,600 sim seconds, five towns, ~190 buildings, ~9,500 road tiles.
 
 | | before | after |
 | --- | --- | --- |
-| `updateRoadLayer` | 9–15 ms | 3.4–4.4 ms |
+| `updateRoadLayer` | 9–15 ms | 2.3–5.1 ms |
 | pixels uploaded per frame | 1.3–2.7 M | 2–14 k |
 | night pass, over daylight | +3.7 … +10.7 ms | +0.4 … +1.6 ms |
-| live median frame | 50 ms | 33 ms |
+| live median frame | 50–67 ms | 33 ms |
 | `step()`, one 16x frame | 1–2 ms | 1–2 ms |
+
+The live median is the one to quote and the one that moves most between runs —
+this box is shared and noisy, so it came out 1.5x better on one pass and 2x on
+another. Take before and after in the same sitting or the number means nothing.
 
 ### The road layer was rescanning and re-uploading the world
 
@@ -113,6 +117,13 @@ Both are now avoided rather than reduced:
   cost 1.6ms between them, where the single 2520x460 rectangle they replace
   costs 2.8ms on its own. That ratio is why `MAX_RUNS` is 384 and why the
   fallback sends whole rows rather than one box round everything.
+
+One thing that looked like free money and was not: skipping the neighbour marks
+for sweep hits. Decay is uniform, so a tile that crossed `EPS` ought to sit
+among neighbours that crossed it too — but a bright road tile crosses several
+times as often as its faint verge, so the verge goes chronically stale instead
+of catching up. It cost 0.11% more standing pixel difference and saved nothing
+measurable. Both paths spread.
 
 ### The night pass got more expensive with every building ever built
 
@@ -192,7 +203,42 @@ Roughly in order of what a real device would thank you for.
 
 Beyond the list in `CLAUDE.md`, one check is specific to the road layer and
 worth keeping: run the incremental painter until it settles, snapshot
-`layer.data`, then force `updateRoadLayer(layer, state, true)` and compare. The
-touch log and the sweep between them should converge on exactly the from-scratch
-result — it was 0 differing pixels out of 4,233,600 when this was written, and
-anything else means a change is being missed rather than merely deferred.
+`layer.data`, then force `updateRoadLayer(layer, state, true)` and compare.
+
+Read the result carefully, because there are two very different numbers here and
+it is easy to quote the wrong one.
+
+- **From a quiet map** — sim paused, painter drained — the two agree exactly:
+  0 differing pixels out of 4,233,600. If that is not zero, a change is being
+  *missed*, and the touch log or the sweep has a hole in it. Pause via the
+  button, not just by not stepping: the page's own `requestAnimationFrame` loop
+  keeps running between Playwright calls, and a map still moving under you
+  yields a handful of differing pixels that mean nothing.
+- **From a map that has been running hard** the two do not agree, and are not
+  supposed to. A tile whose wear has drifted by less than `EPS` keeps the paint
+  it has, so at any moment a fraction of the map is one threshold behind. After
+  200 full sweep cycles that settles at **0.36% of pixels**, and it plateaus
+  rather than accumulating (measured at 5, 20, 60, 150 and 200 cycles).
+
+That second number is not new and was not introduced by any of this work: the
+original code sits at 0.28% on the same test, with the same worst-case pixel
+delta. `EPS` going from 0.02 to 0.06 is what moved it, and the difference is a
+dither step on a road verge. Compare against the *previous build*, not against
+zero — a `git worktree` of the old commit on a second port makes that a
+two-minute job, and it is how every before/after number in this document was
+taken.
+
+## Keeping the loop fast
+
+The checks themselves are trivial — determinism, the road-pixel comparison and
+the convergence check are all sub-second. What costs time is *reaching* a mature
+map: about 80 seconds, almost all of it in the first thousand sim seconds, where
+A* runs over virgin terrain with no roads to follow and nothing is JIT-warm yet.
+
+Two things cut it. Step at `1/20` rather than `1/30` — that is the largest slice
+the real frame loop ever takes, so it walks the same path the game does, and it
+is a third fewer steps. And **cache the matured state to a file**: `snapshot()`
+it once, write the JSON, and on later runs push it into `localStorage` under
+`crossroads.save.v3` and click Load. A full verification pass goes from 162
+seconds to about 5, and every run starts from the identical map, which is worth
+as much as the speed when comparing builds.
