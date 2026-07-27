@@ -1247,13 +1247,18 @@ const BUILDERS = {
   flowers0: () => flowers(0), flowers1: () => flowers(1),
 };
 
-// Wagons: three canvas colours, two frames of trundle, four headings. The
-// left-facing view is the side view mirrored, baked rather than flipped at draw
-// time so the hot path stays a plain drawImage.
+// Wagons: three canvas colours, two frames of trundle, four headings. One
+// horizontal view is the other mirrored, baked rather than flipped at draw time
+// so the hot path stays a plain drawImage.
+//
+// `wagonSide` draws the team at the *left* of the canvas, so it is the
+// left-facing view; `side` (used for a caravan heading +x) is the mirror. Get
+// this pairing the wrong way round and every caravan on the map trundles along
+// with its oxen pushing from behind.
 for (let v = 0; v < 3; v++) {
   for (let f = 0; f < 2; f++) {
-    BUILDERS[`wagon${v}side${f}`] = () => wagonSide(v, f);
-    BUILDERS[`wagon${v}left${f}`] = () => {
+    BUILDERS[`wagon${v}left${f}`] = () => wagonSide(v, f);
+    BUILDERS[`wagon${v}side${f}`] = () => {
       const b = wagonSide(v, f);
       const px = b.px.flipped();
       return { px, ax: px.w - 1 - b.ax, ay: b.ay, lights: [] };
