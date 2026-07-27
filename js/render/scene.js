@@ -23,7 +23,7 @@ import { WORLD } from '../sim/terrain.js';
 import { toScreen, viewBounds } from './camera.js';
 import { bakeTerrain } from './terrainPaint.js';
 import { createRoadLayer, updateRoadLayer, invalidateRoadColors } from './roadPaint.js';
-import { buildScenery, clearAround, trampled } from './scenery.js';
+import { buildScenery, clearedBy, clearAll, trampled } from './scenery.js';
 
 // ------------------------------------------------------------- buildings
 
@@ -83,6 +83,43 @@ const depthOf = (q) => (q.sortY != null ? q.sortY : q.y);
 // cast a shadow onto itself.
 const SHADOWED = /tree|pine|crag|house|inn|bakery|stall|well|cart|haystack|market|warehouse|lumber|smithy|wagon|tent|quarry/;
 
+/**
+ * Ground clutter: the scenery that stops being worth drawing when zoomed out.
+ *
+ * At whole-map zoom a bush is six screen pixels and a clump of flowers is four,
+ * and there are eight thousand of them on a map this size. Drawing them costs
+ * two thirds of the frame and buys a faint speckle over the ground the terrain
+ * bake already mottles — the map is measurably *more* legible without them,
+ * because what survives is the silhouettes that say forest, mountain and waste.
+ *
+ * Trees, pines, crags and cacti are not in here. They are what gives the ground
+ * its texture at a distance, and dropping those would leave a flat painting.
+ */
+const CLUTTER = /^(bush|flowers|rock|reeds|deadbush|bones|wheat)/;
+
+/** Below this zoom the clutter and the scenery shadows are skipped. */
+const DETAIL_ZOOM = 0.7;
+
+/**
+ * What fraction of the *remaining* scenery to draw at a given zoom.
+ *
+ * Dropping the clutter is not enough on its own once the whole world fits on
+ * screen: four and a half thousand trees, pines and crags are still four and a
+ * half thousand draw calls, and at 0.24 zoom each one is eight pixels across.
+ * A forest of eight-pixel blobs at full density is a green smear, and drawing
+ * fewer than half of them is very close to indistinguishable — while the ones
+ * that remain still say "trees" rather than "field".
+ *
+ * `q.lod` is a stable rank baked into each prop by `buildScenery`, so this
+ * thins the *same* trees every frame. A per-frame coin toss would make the
+ * whole map crawl. Ramping rather than stepping means the ones that come back
+ * as you zoom in fade in a few at a time instead of all at once.
+ */
+function sceneryCoverage(zoom) {
+  if (zoom >= DETAIL_ZOOM) return 1;
+  return Math.max(0.42, (zoom - 0.2) / (DETAIL_ZOOM - 0.2));
+}
+
 // ------------------------------------------------------------ the renderer
 
 export function createRenderer(state) {
@@ -114,18 +151,29 @@ export function createRenderer(state) {
 
   /**
    * Regrow the scenery and clear it out of the towns.
-   * `buildScenery` is deterministic, so doing this from scratch after each new
-   * building is both correct and cheap enough — it beats tracking which tree
-   * was removed by which shed.
+   *
+   * `buildScenery` is deterministic, so regrowing from scratch and re-culling
+   * beats tracking which tree was removed by which shed. What it does *not*
+   * beat is doing the expensive half twice: on a map this size the untouched
+   * scenery is a hundred milliseconds' work and it cannot have changed, because
+   * the only thing it depends on is the terrain. So it is grown once per world
+   * and kept, and each rebuild is just the cull — which runs on every new
+   * building, and used to be what the frame after "a shed went up" was
+   * entirely spent on.
    */
   r.rebuildScenery = (st) => {
-    r.scenery = buildScenery(st.terrain);
+    if (r.grownFor !== st.terrain.seed) {
+      r.grown = buildScenery(st.terrain);
+      r.grownFor = st.terrain.seed;
+    }
+    const boxes = [];
     for (const town of st.towns) {
       for (const b of town.buildings) {
         const props = buildingProps(b);
-        r.scenery = clearAround(r.scenery, b.x, b.y, props[props.length - 1].name);
+        boxes.push(clearedBy(b.x, b.y, props[props.length - 1].name));
       }
     }
+    r.scenery = clearAll(r.grown, boxes);
   };
 
   /** Rebuild everything that depends on the *world* (a new or loaded game). */
@@ -272,8 +320,8 @@ function drawProp(g, r, cam, name, wx, wy, shadow = true) {
   g.drawImage(spr.canvas, Math.round(sx - spr.ax), Math.round(sy - spr.ay), spr.dw, spr.dh);
 }
 
-function drawStatic(g, r, cam, q) {
-  drawProp(g, r, cam, q.name, q.x, q.y);
+function drawStatic(g, r, cam, q, shadow) {
+  drawProp(g, r, cam, q.name, q.x, q.y, shadow);
 }
 
 function viewOf(t) {
@@ -626,6 +674,17 @@ export function tickSmoke(r, state, dt) {
 
 // -------------------------------------------------------------------- draw
 
+/** First index in the depth-sorted static list at or past `depth`. */
+function lowerBound(items, depth) {
+  let lo = 0, hi = items.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (depthOf(items[mid]) < depth) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 export function drawScene(g, r, cam, state) {
   const p = pal();
   const v = cam.view;
@@ -659,16 +718,30 @@ export function drawScene(g, r, cam, state) {
   for (const p of state.residents) if (inView(p)) dyn.push(p);
   dyn.sort((a, c) => a.y - c.y);
 
-  let i = 0, j = 0;
-  while (i < r.statics.length || j < dyn.length) {
+  // `r.statics` is sorted by depth, so the slice that can possibly be on screen
+  // is a contiguous run and can be found without walking the whole list. That
+  // matters: the list is thirteen thousand long on a full map, and when the
+  // camera is down at street level all but a few dozen of them are somewhere
+  // else entirely.
+  const detail = STYLE.zoom >= DETAIL_ZOOM;
+  const coverage = sceneryCoverage(STYLE.zoom);
+  const first = lowerBound(r.statics, b.y0 - 60);
+  const last = lowerBound(r.statics, b.y1 + 60);
+
+  let i = first, j = 0;
+  while (i < last || j < dyn.length) {
     const takeStatic = j >= dyn.length
-      || (i < r.statics.length && depthOf(r.statics[i]) <= dyn[j].y);
+      || (i < last && depthOf(r.statics[i]) <= dyn[j].y);
     if (takeStatic) {
       const q = r.statics[i++];
       if (q.x < b.x0 || q.x > b.x1 || q.y < b.y0 || q.y > b.y1 + 60) continue;
+      if (!detail && !q.building) {
+        if (CLUTTER.test(q.name)) continue;
+        if (q.lod > coverage) continue;
+      }
       // Scenery on a worn tile isn't there any more — the road went through it.
       if (!q.building && trampled(state, q)) continue;
-      drawStatic(g, r, cam, q);
+      drawStatic(g, r, cam, q, detail || q.building);
     } else {
       const m = dyn[j++];
       if (m.wagons) drawCaravan(g, r, cam, m);

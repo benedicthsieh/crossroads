@@ -73,6 +73,38 @@ function hillshade(terrain) {
   return out;
 }
 
+/**
+ * How close each desert tile is to ground that is still alive, 0..1.
+ *
+ * The desert covers a tenth of the map and it has to *end* somewhere. A hard
+ * line between sand and grass reads as a texture swap; a couple of tiles of
+ * scorched scrub either side reads as a place where the rain stopped reaching.
+ * Only desert tiles get a value, so the scan is over a tenth of the map.
+ */
+function desertFringe(terrain) {
+  const { w, h, kind } = terrain;
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (kind[i] !== T.DESERT) continue;
+      let green = 0;
+      for (let dy = -3; dy <= 3; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= h) continue;
+        for (let dx = -3; dx <= 3; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= w) continue;
+          const k = kind[ny * w + nx];
+          if (k === T.GRASS || k === T.FOREST) green++;
+        }
+      }
+      out[i] = Math.min(1, green / 10);
+    }
+  }
+  return out;
+}
+
 /** Tiles of water that touch land, so the shallows can be a lighter colour. */
 function shoreMask(terrain) {
   const { w, h, kind } = terrain;
@@ -111,6 +143,8 @@ export function bakeTerrain(terrain) {
   const stoneDark = rgb(p.stoneDark);
   const water = rgb(p.water);
   const wheatDark = rgb(p.wheatDark);
+  const sand = p.sand.map(rgb);
+  const sandDeep = rgb(p.sandDeep);
 
   // Derived ramps, mixed once rather than per pixel.
   const forest = leaf.map((c) => mixRgb(c, grassDeep, 0.25));
@@ -127,12 +161,19 @@ export function bakeTerrain(terrain) {
     mixRgb(stone, stoneDark, 0.5),
   ];
   const snow = mixRgb(rgb(p.white), stone, 0.25);
+  // Where the sand meets anything that isn't sand. Painting the boundary in
+  // full dune colour makes the desert look like a sheet of paper laid over the
+  // map; a band of scorched, half-dead ground reads as somewhere the grass gave
+  // up rather than somewhere the artist stopped.
+  const scrubland = mixRgb(sand[2], grassDeep, 0.34);
+  const sandRock = mixRgb(sandDeep, stoneDark, 0.3);
   const deepWater = mixRgb(water, rgb('#16233f'), 0.42);
   const shallow = mixRgb(water, grass[0], 0.3);
   const fordBed = mixRgb(dirt[0], water, 0.42);
 
   const shade = hillshade(terrain);
   const shore = shoreMask(terrain);
+  const dry = desertFringe(terrain);
   const { kind, elev, ford } = terrain;
 
   // Elevation range of mountain tiles, so the snow line is a proportion of the
@@ -191,6 +232,22 @@ export function bakeTerrain(terrain) {
           col = rock[(n * 3) | 0];
           if (height > 0.72 && n > 0.25) col = snow;
           else if (height < 0.22 && n > 0.7) col = mixRgb(rock[0], hill[1], 0.45);
+          break;
+        }
+        case T.DESERT: {
+          // Dunes. The banding is the whole trick: a long, low-frequency ripple
+          // sampled diagonally, quantised to a handful of steps, so the sand
+          // reads as *drifted* rather than as noise. Straight mottling at this
+          // scale looks like static, and static is the one thing sand must not
+          // look like when it covers a tenth of the map.
+          const ripple = smoothNoise(x + y * 0.45, y * 2.6, 61, 26);
+          const band = (ripple * 3.4 + n * 0.6) | 0;
+          col = sand[Math.max(0, Math.min(3, band))];
+          if (ripple > 0.78 && n > 0.35) col = sand[3];        // the lit crest
+          else if (ripple < 0.2) col = sandDeep;               // the trough
+          if (n > 0.986) col = sandRock;                       // stone breaking through
+          // Fringe: near the edge of the waste, dead scrub still holds on.
+          if (dry[i] > 0 && n > dry[i] * 0.55) col = scrubland;
           break;
         }
         default: {

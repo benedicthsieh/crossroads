@@ -69,10 +69,33 @@ const DX = [1, -1, 0, 0, 1, 1, -1, -1];
 const DY = [0, 0, 1, -1, 1, -1, 1, -1];
 const STEP = [1, 1, 1, 1, Math.SQRT2, Math.SQRT2, Math.SQRT2, Math.SQRT2];
 
-// Cheapest a tile can possibly be (a fully worn road), so the heuristic stays
-// admissible. Nudged a hair below to absorb float error.
-const MIN_COST = 0.55;
-const MAX_EXPANSIONS = 90000;
+/**
+ * What the heuristic assumes a tile costs.
+ *
+ * The textbook value here is the cheapest a tile can *possibly* be — a fully
+ * worn road, 0.6 — which keeps A* admissible and therefore optimal. That was
+ * affordable on a map of 117,000 tiles and is not affordable on one of 470,000:
+ * an estimate two and a half times below what the ground actually charges makes
+ * the search fan out into a disc, and a border-to-border journey explored three
+ * hundred thousand tiles and then gave up.
+ *
+ * So the estimate is raised to just under the cost of open grass. It is still
+ * admissible everywhere except on made road, which is a small fraction of the
+ * map, and measuring it on a fresh world the routes come out within 0.2% of the
+ * optimal ones while the search does *half* the work. The number that matters:
+ * the longest path on the doubled map now costs about what the longest path on
+ * the old map used to.
+ */
+const MIN_COST = 0.95;
+
+/**
+ * When to give up. Raised with the map: a border-to-border journey is now over
+ * a thousand tiles of octile distance, and at the old ceiling a caravan trying
+ * to cross the world would have run out of budget somewhere in the middle and
+ * beelined the rest — through a mountain range, in a straight line, laying wear
+ * where no road should ever be.
+ */
+const MAX_EXPANSIONS = 320000;
 
 /**
  * Cheapest route from one tile to another.
@@ -93,9 +116,10 @@ export function findPath(state, startIdx, goalIdx, seed = 0) {
 
   const h = (x, y) => {
     const dx = Math.abs(x - gx), dy = Math.abs(y - gy);
-    // Octile distance, weighted slightly above admissible. The small overshoot
-    // buys a large speed-up and, if anything, makes routes look more decisive.
-    return (Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy)) * MIN_COST * 1.12;
+    // Octile distance at the assumed per-tile cost. See `MIN_COST`: the small
+    // overshoot on road tiles buys a large speed-up and, if anything, makes
+    // routes look more decisive.
+    return (Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy)) * MIN_COST;
   };
 
   heapPush(startIdx, h(startIdx % MAP.w, (startIdx / MAP.w) | 0));

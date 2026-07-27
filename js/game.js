@@ -8,9 +8,10 @@
 
 import { STYLE } from './palette.js';
 import { createState, step, snapshot, totalPopulation } from './sim/state.js';
-import { WORLD, TERRAIN_NAMES, MAP, TILE } from './sim/terrain.js';
+import { WORLD, TERRAIN_NAMES, MAP, TILE, regionOf } from './sim/terrain.js';
 import { housing, population } from './sim/towns.js';
-import { stockOf, countKind, workingFields, consumption } from './sim/economy.js';
+import { stockOf, countKind, workingFields, consumption, luxuryStanding } from './sim/economy.js';
+import { heldLuxuries, LUXURY_KINDS, LUXURIES } from './sim/luxuries.js';
 import { saveLocal, loadLocal, hasLocal, toShareCode, fromShareCode, saveSize } from './sim/save.js';
 import {
   makeCamera, resizeCamera, applyTransform, toWorld, clampCamera,
@@ -345,6 +346,30 @@ const terrainUnder = (x, y) => TERRAIN_NAMES[state.terrain.kind[
   Math.min(MAP.h - 1, Math.floor(y / TILE)) * MAP.w + Math.min(MAP.w - 1, Math.floor(x / TILE))
 ]];
 
+const regionUnder = (x, y) => regionOf(state.terrain, x, y).name;
+
+/**
+ * Which luxuries exist anywhere on the map, and how many towns hold each.
+ *
+ * Reported as "how many of the five are in circulation" rather than as a total
+ * weight, because the interesting number is variety: two towns swapping spice
+ * for gems is the thing this whole system is for, and a bare tonnage would read
+ * the same whether one town was hoarding or five were trading.
+ */
+function luxuryTrade(st) {
+  const holders = new Map();
+  for (const t of st.towns) {
+    for (const l of heldLuxuries(stockOf(t), 1)) {
+      holders.set(l.kind, (holders.get(l.kind) || 0) + 1);
+    }
+  }
+  if (!holders.size) return 'none in circulation';
+  const parts = [...holders.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([kind, n]) => `${LUXURIES[kind].label} ×${n}`);
+  return `${holders.size}/${LUXURY_KINDS.length} · ${parts.slice(0, 3).join(', ')}`;
+}
+
 function refreshHud() {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
   let onRoad = 0;
@@ -358,6 +383,7 @@ function refreshHud() {
   set('statTrades', state.stats.trades);
   set('statStores', stores(state));
   set('statFields', fields(state));
+  set('statLuxuries', luxuryTrade(state));
   set('statFps', fps);
 
   const card = document.getElementById('card');
@@ -376,7 +402,7 @@ function refreshHud() {
               : 'leaving by the far road';
     set('cardName', `${c.home ? 'Trade run' : 'Caravan'} #${c.id}`);
     set('cardRole', `${c.wagons} wagon${c.wagons === 1 ? '' : 's'}, ${c.souls} souls`);
-    set('cardItem', `${heading} · crossing ${terrainUnder(c.x, c.y)}${load(c)}`);
+    set('cardItem', `${heading} · crossing ${terrainUnder(c.x, c.y)} in the ${regionUnder(c.x, c.y)}${load(c)}`);
   } else if (p) {
     card.hidden = false;
     const town = state.towns.find((t) => t.id === p.town);
@@ -388,11 +414,21 @@ function refreshHud() {
   }
 }
 
-/** What a caravan is hauling: real material first, then the sack it's holding. */
+/**
+ * What a caravan is hauling: real material first, then the sack it's holding.
+ *
+ * Luxuries are listed first and to one decimal place. Half a jar of spice is a
+ * meaningful cargo and "0 spice" is not — the whole shelf only holds fourteen.
+ */
 function load(c) {
   if (c.cargo) {
     const parts = [];
-    for (const [res, n] of Object.entries(c.cargo)) {
+    for (const res of LUXURY_KINDS) {
+      const n = c.cargo[res] || 0;
+      if (n >= 0.1) parts.push(`${n.toFixed(1)} ${LUXURIES[res].label}`);
+    }
+    for (const res of ['food', 'wood', 'stone']) {
+      const n = c.cargo[res] || 0;
       if (n >= 0.5) parts.push(`${Math.round(n)} ${res}`);
     }
     if (parts.length) return ` · hauling ${parts.join(', ')}`;
@@ -409,30 +445,50 @@ function refreshTowns() {
     list.innerHTML = '<li class="quiet">None yet — the roads have to meet first.</li>';
     return;
   }
+  // Grouped by region, because "which country is this in" is now the first
+  // thing worth knowing about a town — it is what decides who it trades with.
+  const byRegion = new Map();
   for (const t of state.towns) {
-    const li = document.createElement('li');
-    const beds = housing(t) - population(t);
-    const s = stockOf(t);
-    const tents = countKind(t, 'tent');
-    // Days of food in hand rather than raw stock: "9 food" means nothing, "the
-    // larder is nearly out" means everything.
-    const larder = consumption(t) > 0 ? s.food / consumption(t) : 999;
-    const food = t.starving ? '<b>starving</b>'
-      : larder < 30 ? 'short of food' : `${Math.round(s.food)} food`;
-    li.innerHTML = `<b>${t.name}</b> — ${population(t)} people, ${t.buildings.length}
+    if (!byRegion.has(t.region)) byRegion.set(t.region, []);
+    byRegion.get(t.region).push(t);
+  }
+
+  for (const [region, towns] of [...byRegion.entries()].sort((a, b) => a[0] - b[0])) {
+    const info = state.terrain.regions[region];
+    const head = document.createElement('li');
+    head.className = 'quiet';
+    head.innerHTML = `<b>${info.name}</b>${info.arid ? ' — arid' : ''} · ${info.herb}`;
+    list.append(head);
+
+    for (const t of towns) {
+      const li = document.createElement('li');
+      const beds = housing(t) - population(t);
+      const s = stockOf(t);
+      const tents = countKind(t, 'tent');
+      // Days of food in hand rather than raw stock: "9 food" means nothing, "the
+      // larder is nearly out" means everything.
+      const larder = consumption(t) > 0 ? s.food / consumption(t) : 999;
+      const food = t.starving ? '<b>starving</b>'
+        : larder < 30 ? 'short of food' : `${Math.round(s.food)} food`;
+      // Only what it actually has a supply of. A town holding a tenth of a jar
+      // of something is not a spice town and should not be listed as one.
+      const lux = heldLuxuries(s, 1).map((l) => l.label).join(', ');
+      li.innerHTML = `<b>${t.name}</b> — ${population(t)} people, ${t.buildings.length}
       building${t.buildings.length === 1 ? '' : 's'}, ${beds > 0 ? `${beds} bed${beds === 1 ? '' : 's'} free` : 'full'}
       <span class="tiny">${food} · ${Math.round(s.wood)} wood · ${Math.round(s.stone)} stone${
   tents ? ` · ${tents} tent${tents === 1 ? '' : 's'}` : ''}${
-  workingFields(t) ? ` · ${workingFields(t)} field${workingFields(t) === 1 ? '' : 's'}` : ''}</span>`;
-    li.style.cursor = 'pointer';
-    li.onclick = () => {
-      cam.follow = null;
-      renderer.follow = null;
-      cam.x = t.x;
-      cam.y = t.y;
-      clampCamera(cam);
-    };
-    list.append(li);
+  workingFields(t) ? ` · ${workingFields(t)} field${workingFields(t) === 1 ? '' : 's'}` : ''}${
+  lux ? `<br>trades in ${lux} · standing ${luxuryStanding(t).toFixed(1)}` : ''}</span>`;
+      li.style.cursor = 'pointer';
+      li.onclick = () => {
+        cam.follow = null;
+        renderer.follow = null;
+        cam.x = t.x;
+        cam.y = t.y;
+        clampCamera(cam);
+      };
+      list.append(li);
+    }
   }
 }
 

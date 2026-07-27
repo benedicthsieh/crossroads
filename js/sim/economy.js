@@ -28,7 +28,11 @@
 // Everything here is plain arithmetic on plain numbers. No randomness, so two
 // clients stepping the same state produce byte-identical stock levels.
 
-import { MAP, TILE, T, tileIndex } from './terrain.js';
+import { MAP, TILE, T, tileIndex, lodesNear, regionAt } from './terrain.js';
+import {
+  LUXURY_KINDS, LUXURY_CAP, RESOURCES, LUXURIES,
+  luxuryYields, tickLuxuries, standing, wants,
+} from './luxuries.js';
 
 // ------------------------------------------------------------------ the land
 
@@ -46,11 +50,17 @@ const WORK_RADIUS = 30;
  * Pure function of the seed and the town's position, so it is *derived* rather
  * than stored — same rule as terrain and gates. `landOf` caches it on the town
  * for the rest of the session; a restore simply surveys again.
+ *
+ * `desert` is counted apart from `open` rather than folded into it, and that
+ * single line is what makes the waste poor: sand grows no scrub to cut, feeds
+ * no game, and cannot be ploughed, so every ceiling downstream that reads
+ * `land.open` quietly skips it. What sand does give is spice, and nothing else
+ * on the map gives that.
  */
 export function surveyLand(state, town) {
   const cx = Math.floor(town.x / TILE), cy = Math.floor(town.y / TILE);
   const r = WORK_RADIUS;
-  const land = { forest: 0, water: 0, mountain: 0, hill: 0, open: 0 };
+  const land = { forest: 0, water: 0, mountain: 0, hill: 0, open: 0, desert: 0, lodes: 0 };
   for (let ty = cy - r; ty <= cy + r; ty++) {
     if (ty < 0 || ty >= MAP.h) continue;
     for (let tx = cx - r; tx <= cx + r; tx++) {
@@ -62,10 +72,13 @@ export function surveyLand(state, town) {
         case T.WATER: land.water++; break;
         case T.MOUNTAIN: land.mountain++; break;
         case T.HILL: land.hill++; break;
+        case T.DESERT: land.desert++; break;
         default: land.open++;
       }
     }
   }
+  land.lodes = lodesNear(state.terrain, cx, cy);
+  land.region = regionAt(state.terrain, cx, cy);
   return land;
 }
 
@@ -77,7 +90,20 @@ export function landOf(state, town) {
 // ------------------------------------------------------------------- stores
 
 export function emptyStock() {
-  return { food: 0, wood: 0, stone: 0 };
+  const stock = { food: 0, wood: 0, stone: 0 };
+  for (const kind of LUXURY_KINDS) stock[kind] = 0;
+  return stock;
+}
+
+/**
+ * How much of one resource a store holds.
+ *
+ * Staples share the warehouse; luxuries have their own short shelf and do not
+ * benefit from one. See the note on `LUXURY_CAP` — a town that could bank three
+ * hundred jars of spice would trade once and then be done with the road.
+ */
+export function capacityFor(town, res) {
+  return LUXURIES[res] ? LUXURY_CAP : storeCapacity(town);
 }
 
 /** A town's stores, created on demand so a restored save can't be caught out. */
@@ -196,6 +222,18 @@ const LEAN_SECONDS = 40;
 /** How much of each material a town tries to keep on the shelf. */
 const WANT_WOOD = 45, WANT_STONE = 35;
 
+/**
+ * Traffic per second per point of standing.
+ *
+ * Sized against what a town's road already brings it, which is small — a
+ * passing wagon is worth 0.2 a second and a trade call is worth 2. A town with
+ * all three luxury families on the shelf scores about 4, so this roughly
+ * doubles the income of a well-connected settlement and does nothing at all for
+ * one that has never seen a caravan. That asymmetry is the point: luxuries are
+ * a multiplier on being on the road, not a substitute for it.
+ */
+const LUXURY_TRAFFIC = 0.05;
+
 // --------------------------------------------------------------- clearing
 //
 // A field is not built, it is *broken in*. The hands doing it are hands that are
@@ -301,6 +339,7 @@ export function stoneCeiling(state, town) {
  */
 export function produce(state, town, dt) {
   const stock = stockOf(town);
+  const land = landOf(state, town);
   const pop = people(town);
   const hands = Math.max(1, pop * WORKING_SHARE);
   let free = hands;
@@ -317,8 +356,8 @@ export function produce(state, town, dt) {
   let target = need * (lean ? 1.8 : 1.1);
   const sources = [
     { cap: workingFields(town) * FIELD_YIELD, per: PER_WORKER.farm },
-    { cap: Math.min(FISH_CEILING, FISH_PER_TILE * landOf(state, town).water), per: PER_WORKER.fish },
-    { cap: Math.min(HUNT_CEILING, HUNT_PER_TILE * landOf(state, town).forest), per: PER_WORKER.hunt },
+    { cap: Math.min(FISH_CEILING, FISH_PER_TILE * land.water), per: PER_WORKER.fish },
+    { cap: Math.min(HUNT_CEILING, HUNT_PER_TILE * land.forest), per: PER_WORKER.hunt },
   ];
   let food = 0;
   for (const src of sources) {
@@ -364,6 +403,17 @@ export function produce(state, town, dt) {
   stock.wood = Math.min(store, stock.wood + wood * dt);
   stock.stone = Math.min(store, stock.stone + stone * dt);
 
+  // ---- luxuries -----------------------------------------------------------
+  // Gathered outside the labour split (see `luxuries.js`) and then *spent* on
+  // being a nice place to arrive at. Standing is the only thing luxuries buy,
+  // and what it buys is traffic — which is the labour and the coin every
+  // building in the game is already paid for with. A town that trades in three
+  // directions therefore builds visibly faster than one that trades in none,
+  // without a single new resource appearing in `MATERIALS`.
+  const yields = luxuryYields(town, land, countKind(town, 'quarry'));
+  town.standing = tickLuxuries(stock, yields, pop, dt);
+  town.traffic += LUXURY_TRAFFIC * town.standing * dt;
+
   // Derived, for the HUD and for the decisions in towns.js and state.js. Never
   // serialised — it is rebuilt within one upkeep tick of any restore.
   town.starving = stock.food <= 0 && food < need;
@@ -372,6 +422,11 @@ export function produce(state, town, dt) {
     hands, clearing, onFood: afterClearing - free,
   };
   return town.rates;
+}
+
+/** A town's standing, safe to ask for before its first upkeep tick. */
+export function luxuryStanding(town) {
+  return town.standing != null ? town.standing : standing(town.stock);
 }
 
 // --------------------------------------------------------------- caravan loads
@@ -394,73 +449,130 @@ export const PROVISIONS = 2.2;
 const TRADE_RESERVE = 25;
 
 /**
- * Load a departing trade run with whatever the home town has most to spare.
- * Returns the cargo, which is plain `{wood, stone, food}` and serialisable.
+ * And this much of a luxury. Far lower, because the shelf itself is short: a
+ * town that kept twenty-five jars back would be keeping its entire supply, and
+ * the spice would never leave the desert.
  */
-export function loadCargo(town, wagons) {
-  const stock = stockOf(town);
-  const cargo = { food: 0, wood: 0, stone: 0 };
-  let room = WAGON_LOAD * wagons;
-  // Richest store first, so a lumber town exports timber and a quarry town rock.
-  const order = ['wood', 'stone', 'food'].sort((a, b) => stock[b] - stock[a]);
-  for (const res of order) {
-    if (room <= 0) break;
-    const spare = Math.max(0, stock[res] - TRADE_RESERVE);
-    const take = Math.min(room, spare);
-    if (take <= 0) continue;
-    stock[res] -= take;
-    cargo[res] += take;
-    room -= take;
-  }
+const LUXURY_RESERVE = 1.5;
+
+const reserveFor = (res) => (LUXURIES[res] ? LUXURY_RESERVE : TRADE_RESERVE);
+
+function emptyCargo() {
+  const cargo = {};
+  for (const res of RESOURCES) cargo[res] = 0;
   return cargo;
 }
 
-/** Hand over part of a load, and pick up whatever this town can spare in return. */
+/** Everything in a load, by weight. */
+export function cargoWeight(cargo) {
+  let total = 0;
+  for (const res of RESOURCES) total += cargo[res] || 0;
+  return total;
+}
+
+/**
+ * Load a departing trade run with whatever the home town has most to spare.
+ * Returns the cargo, which is plain numbers by resource and serialisable.
+ *
+ * Luxuries are loaded *first* and staples fill whatever is left. That ordering
+ * is small and load-bearing: a prosperous town has fifty spare timber and four
+ * jars of spice, and by weight the timber would take the whole wagon. The four
+ * jars are the reason anybody is making the journey.
+ */
+export function loadCargo(town, wagons) {
+  const stock = stockOf(town);
+  const cargo = emptyCargo();
+  let room = WAGON_LOAD * wagons;
+  const take = (res) => {
+    if (room <= 0) return;
+    const spare = Math.max(0, stock[res] - reserveFor(res));
+    const amount = Math.min(room, spare);
+    if (amount <= 0) return;
+    stock[res] -= amount;
+    cargo[res] += amount;
+    room -= amount;
+  };
+
+  // Richest shelf first within each half, so a lumber town exports timber, a
+  // quarry town rock, and a desert town its spice.
+  for (const res of [...LUXURY_KINDS].sort((a, b) => stock[b] - stock[a])) take(res);
+  for (const res of ['wood', 'stone', 'food'].sort((a, b) => stock[b] - stock[a])) take(res);
+  return cargo;
+}
+
+/**
+ * Hand over part of a load, and pick up whatever this town can spare in return.
+ *
+ * Staples are dropped by the flat `share` — everybody wants timber and stone,
+ * and haggling over them would be noise. Luxuries are dropped by how much this
+ * town actually *lacks* them, which is what makes a circuit find its own route:
+ * a wagon carrying mosswort through mosswort country arrives, is politely
+ * relieved of almost none of it, and carries the rest on south to somewhere
+ * that has never smelled the stuff.
+ */
 export function tradeAt(town, cargo, share = 0.6) {
   const stock = stockOf(town);
-  const cap = storeCapacity(town);
+  const short = wants(stock);
   let given = 0, gained = 0;
-  for (const res of ['food', 'wood', 'stone']) {
-    const drop = cargo[res] * share;
-    if (drop > 0) {
-      stock[res] = Math.min(cap, stock[res] + drop);
-      cargo[res] -= drop;
-      given += drop;
-    }
+
+  for (const res of RESOURCES) {
+    const held = cargo[res] || 0;
+    if (held <= 0) continue;
+    const drop = held * (LUXURIES[res] ? Math.min(1, short[res] * 1.2) : share);
+    if (drop <= 0) continue;
+    const cap = capacityFor(town, res);
+    const room = Math.max(0, cap - stock[res]);
+    const moved = Math.min(drop, room);
+    stock[res] += moved;
+    cargo[res] -= moved;
+    given += moved;
   }
+
   // Take on this town's surplus for the next leg — that is what makes a circuit
   // worth running rather than a one-way delivery.
-  let room = Math.max(0, WAGON_LOAD - (cargo.food + cargo.wood + cargo.stone));
-  for (const res of ['wood', 'stone', 'food']) {
-    if (room <= 0) break;
-    const spare = Math.max(0, stock[res] - TRADE_RESERVE);
-    const take = Math.min(room, spare);
-    if (take <= 0) continue;
-    stock[res] -= take;
-    cargo[res] += take;
-    room -= take;
-    gained += take;
-  }
+  let room = Math.max(0, WAGON_LOAD - cargoWeight(cargo));
+  const pickUp = (res) => {
+    if (room <= 0) return;
+    const spare = Math.max(0, stock[res] - reserveFor(res));
+    const amount = Math.min(room, spare);
+    if (amount <= 0) return;
+    stock[res] -= amount;
+    cargo[res] += amount;
+    room -= amount;
+    gained += amount;
+  };
+  for (const res of LUXURY_KINDS) pickUp(res);
+  for (const res of ['wood', 'stone', 'food']) pickUp(res);
   return { given, gained };
 }
 
 /** Unload everything, at the end of a circuit. */
 export function unloadCargo(town, cargo) {
   const stock = stockOf(town);
-  const cap = storeCapacity(town);
   let total = 0;
-  for (const res of ['food', 'wood', 'stone']) {
+  for (const res of RESOURCES) {
     if (!cargo[res]) continue;
-    stock[res] = Math.min(cap, stock[res] + cargo[res]);
+    stock[res] = Math.min(capacityFor(town, res), stock[res] + cargo[res]);
     total += cargo[res];
     cargo[res] = 0;
   }
   return total;
 }
 
-/** The icon a load should show as it changes hands. */
+/**
+ * The icon a load should show as it changes hands.
+ *
+ * Luxuries win over staples however little of them there is. A wagon carrying
+ * thirty timber and one uncut gem is, to everybody watching it go past, the
+ * wagon with the gem in it.
+ */
 export function cargoIcon(cargo) {
   if (!cargo) return null;
+  let bestLux = null, bestN = 0.05;
+  for (const res of LUXURY_KINDS) {
+    if ((cargo[res] || 0) > bestN) { bestN = cargo[res]; bestLux = res; }
+  }
+  if (bestLux) return LUXURIES[bestLux].icon;
   const { food = 0, wood = 0, stone = 0 } = cargo;
   if (food + wood + stone <= 0.01) return null;
   if (wood >= food && wood >= stone) return 'log';

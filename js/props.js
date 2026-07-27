@@ -1203,6 +1203,79 @@ function reeds(variant) {
   return { px, ax: 6, ay: 11, lights: [] };
 }
 
+// ---------------------------------------------------------------- the waste
+//
+// The desert painter draws dunes, and dunes alone are ground rather than a
+// place. These three props are the whole silhouette budget for a tenth of the
+// map, so each one has a different job: the cactus gives it a vertical, the
+// dead bush gives it litter at ground level, and the bleached bone gives it the
+// one detail that says *this ground kills things*.
+
+/** A column cactus. Two arms or none — three starts to look like a cartoon. */
+function cactus(variant) {
+  const p = pal();
+  const px = new Pix(16, 30);
+  const cx = 8;
+  const skin = mix(p.leaf[0], p.stone, 0.22);
+  const lit = lighten(skin, 0.26);
+  const dark = darken(skin, 0.3);
+
+  px.fill(cx - 2, 8, 4, 21, skin);
+  px.fill(cx - 2, 7, 4, 1, lit);                     // rounded crown
+  px.shadeOver(cx + 1, 8, 2, 21, dark);
+  px.fill(cx - 2, 10, 1, 17, lit);                   // the lit rib
+
+  if (variant % 2 === 0) {
+    // Left arm, elbowed: a straight stub reads as a signpost.
+    px.fill(cx - 6, 18, 3, 3, skin);
+    px.fill(cx - 6, 13, 3, 6, skin);
+    px.fill(cx - 6, 12, 3, 1, lit);
+    px.shadeOver(cx - 4, 12, 1, 9, dark);
+  }
+  // Right arm, always, a little higher so the two are never symmetrical.
+  px.fill(cx + 2, 15, 3, 3, skin);
+  px.fill(cx + 3, 10, 3, 6, skin);
+  px.fill(cx + 3, 9, 3, 1, lit);
+  px.shadeOver(cx + 4, 9, 2, 9, dark);
+
+  // Spines: single pixels, or the outline pass welds them into a fuzz.
+  for (let i = 0; i < 5; i++) {
+    const y = 11 + i * 4;
+    px.set(cx - 3, y, lit);
+    px.set(cx + 3, y + 2, dark);
+  }
+  return { px, ax: cx, ay: 29, lights: [] };
+}
+
+/** Dead scrub. What a bush looks like two summers after the last rain. */
+function deadbush(variant) {
+  const p = pal();
+  const px = new Pix(16, 12);
+  const wood = mix(p.trunk, p.sandDeep, 0.45);
+  const pale = lighten(wood, 0.3);
+  for (let i = 0; i < 7; i++) {
+    const x = 3 + Math.floor(hash2(i, variant, 31) * 10);
+    const top = 2 + Math.floor(hash2(i, variant, 33) * 5);
+    px.line(8, 11, x, top, i % 3 === 0 ? pale : wood);
+  }
+  px.fill(6, 10, 5, 1, darken(wood, 0.25));
+  return { px, ax: 8, ay: 11, lights: [] };
+}
+
+/** A skull and a couple of ribs, bleached. Rare on purpose — see `scenery.js`. */
+function bones() {
+  const p = pal();
+  const px = new Pix(14, 8);
+  const bone = mix(p.white, p.sand[0], 0.35);
+  const shade = darken(bone, 0.25);
+  px.disc(4, 4, 2.6, bone);
+  px.shadeOver(5, 2, 3, 5, shade);
+  px.set(3, 4, p.eye);                               // eye socket
+  px.fill(2, 6, 4, 1, shade);                        // jaw
+  for (let i = 0; i < 3; i++) px.fill(8 + i * 2, 3 + i, 2, 1, bone);
+  return { px, ax: 6, ay: 7, lights: [] };
+}
+
 /** A conifer. Reads as upland forest next to the round-canopy broadleaf trees. */
 function pine(variant) {
   const p = pal();
@@ -1242,6 +1315,9 @@ const BUILDERS = {
   stall2back: () => stall(2, 'back'), stall2front: () => stall(2, 'front'),
   tree0: () => tree(0), tree1: () => tree(1), tree2: () => tree(2),
   bush0: () => bush(0), bush1: () => bush(1), bush2: () => bush(2),
+  cactus0: () => cactus(0), cactus1: () => cactus(1),
+  deadbush0: () => deadbush(0), deadbush1: () => deadbush(1),
+  bones,
   fenceH: () => fence(false), fenceV: () => fence(true),
   wheat0: () => wheatTuft(0), wheat1: () => wheatTuft(1),
   flowers0: () => flowers(0), flowers1: () => flowers(1),
@@ -1285,6 +1361,22 @@ export function unitOf(name) {
 }
 
 /**
+ * Baked props for the style currently in force, keyed by name alone.
+ *
+ * This exists purely for the draw loop. `drawScene` asks for a prop several
+ * thousand times a frame — once per tree, crag and building on screen — and the
+ * general path below builds three cache-key strings and does two map lookups
+ * for every one of them. Measured on a full map that was a quarter of the
+ * renderer's entire frame budget, spent entirely on string concatenation.
+ *
+ * It cannot go stale on its own: the only thing that changes what a prop looks
+ * like is the style key, which is checked on every call, and a re-bake clears
+ * the whole thing through `clearPropCache`.
+ */
+let hot = new Map();
+let hotKey = '';
+
+/**
  * Get a baked prop.
  *
  * The returned `dw`/`dh` are the size to draw at, and they are *not* the
@@ -1292,16 +1384,27 @@ export function unitOf(name) {
  * silently lost.
  */
 export function prop(name) {
+  const style = styleKey();
+  if (style !== hotKey) { hot = new Map(); hotKey = style; }
+  const unit = unitOf(name);
+  // The unit check is not paranoia: `UNIT` is mutable and the demo turns the
+  // building shrink off at startup. The style key knows nothing about that, so
+  // without this the fast path would happily hand back a prop baked at the
+  // other scale.
+  const quick = hot.get(name);
+  if (quick && quick.unit === unit) return quick;
+
   const build = BUILDERS[name];
   if (!build) throw new Error(`unknown prop: ${name}`);
-  const unit = unitOf(name);
   const key = `p|${name}`;
   const bake = Math.max(1, Math.round(STYLE.scale * unit));
-  if (!cache.has(`${key}|${styleKey()}|${bake}`)) {
+  if (!cache.has(`${key}|${style}|${bake}`)) {
     const built = build();
     LIGHTS.set(name, built.lights || []);
   }
-  return cached(key, build, unit);
+  const hit = cached(key, build, unit);
+  hot.set(name, hit);
+  return hit;
 }
 
 /**
@@ -1346,4 +1449,8 @@ export function propMeta(name) {
 
 export function clearPropCache() {
   cache.clear();
+  // `metaCache` deliberately survives: a prop's anchor and footprint come from
+  // the authored art and the unit, neither of which a re-bake changes.
+  hot = new Map();
+  hotKey = '';
 }

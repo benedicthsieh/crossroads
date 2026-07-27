@@ -11,7 +11,7 @@
 // A town is plain data. It holds no sprites, no canvases and no colours; the
 // renderer turns `kind` into a prop and that is the only place art enters.
 
-import { MAP, TILE, T, buildable, tileIndex } from './terrain.js';
+import { MAP, TILE, T, buildable, tileIndex, regionAt, REGION_COUNT } from './terrain.js';
 import { ROAD_MIN, armCount } from './roads.js';
 import {
   emptyStock, stockOf, landOf, hasMaterials, payMaterials, needsStone, materialsFor,
@@ -20,12 +20,49 @@ import {
 
 /**
  * Minimum gap between town centres, in world units. Sized against the map
- * rather than against the buildings: five towns on a 2520x1680 world want to be
- * a real journey apart, or the road between two of them never gets long enough
- * to grow a junction of its own.
+ * rather than against the buildings: towns on a 5040x3360 world want to be a
+ * real journey apart, or the road between two of them never gets long enough to
+ * grow a junction of its own.
  */
-export const TOWN_SPACING = 470;
-export const MAX_TOWNS = 5;
+export const TOWN_SPACING = 780;
+
+/**
+ * The ceiling, and how it is shaped.
+ *
+ * `MAX_TOWNS` on its own is a blunt instrument on a map with regions in it: the
+ * first territory to grow a road network would take every slot, and the far
+ * side of the mountains would stay empty for the rest of the run — which is
+ * exactly the outcome the regions exist to prevent, because a region with no
+ * towns in it has nothing to trade.
+ *
+ * So the cap is per region as well as global, and the global one is set below
+ * `REGION_COUNT × MAX_PER_REGION` on purpose. The regions compete for the last
+ * few slots, and a well-connected territory can end up with five where a
+ * mountainous one gets two — but no territory can take them all.
+ */
+export const MAX_PER_REGION = 5;
+export const MAX_TOWNS = 14;
+
+/** How many towns a region is already carrying. */
+export function townsInRegion(state, region) {
+  let n = 0;
+  for (const t of state.towns) if (t.region === region) n++;
+  return n;
+}
+
+/** Is there room in the world, and in this particular corner of it, for one more? */
+export function canFound(state, x, y) {
+  if (state.towns.length >= MAX_TOWNS) return false;
+  const region = regionAt(state.terrain, Math.floor(x / TILE), Math.floor(y / TILE));
+  return townsInRegion(state, region) < MAX_PER_REGION;
+}
+
+/** Regions that still have room. Used by the HUD, and by nothing that decides. */
+export function openRegions(state) {
+  let n = 0;
+  for (let r = 0; r < REGION_COUNT; r++) if (townsInRegion(state, r) < MAX_PER_REGION) n++;
+  return n;
+}
 
 /**
  * How many people sleep where.
@@ -226,6 +263,13 @@ function planIndex(town) {
 function wantsField(state, town) {
   const pop = population(town);
   if (pop < 8) return false;
+  // Nothing ploughable in reach — a town in the middle of the waste. Asking for
+  // a field it can never site would be worse than useless: `growTown` banks
+  // traffic against a plot that `findPlot` refuses to find, and the settlement
+  // would spend the rest of the game unable to afford anything else. A desert
+  // town does not farm. It buys its dinner, or it shrinks.
+  const land = landOf(state, town);
+  if (land.open + land.forest < 40) return false;
   const fields = countKind(town, 'farm');
   if (fields > workingFields(town)) return false;
   if (fields >= Math.ceil(pop / 12) + 1) return false;
@@ -406,12 +450,16 @@ export function growPopulation(state, town, dt) {
  * founding and joining credit population through exactly one code path.
  */
 export function foundTown(state, x, y) {
-  if (state.towns.length >= MAX_TOWNS) return null;
+  if (!canFound(state, x, y)) return null;
   const town = {
     id: state.nextId++,
     name: townName(state.rng, state.towns.map((t) => t.name)),
     x: Math.round(x),
     y: Math.round(y),
+    // Which territory this is in. Stored rather than looked up every time it is
+    // wanted — the town cannot move, and the answer is wanted once per trade
+    // decision per town per second.
+    region: regionAt(state.terrain, Math.floor(x / TILE), Math.floor(y / TILE)),
     founded: state.time,
     traffic: 6,
     pop: 0,          // the founding caravan's souls are added by `settle`

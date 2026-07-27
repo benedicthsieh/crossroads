@@ -21,8 +21,14 @@ export const WEAR_MAX = 2.6;
 /** What a fully worn road costs to walk, whatever it was cut through. */
 const ROAD_COST = 0.6;
 
-/** Roads fade if nobody uses them. Slow — an abandoned road is still a road. */
-const DECAY_HALFLIFE = 900;
+/**
+ * Roads fade if nobody uses them. Slow — an abandoned road is still a road.
+ *
+ * Lengthened with the map. A route between two regions might now go a couple of
+ * minutes between wagons simply because it is long, and at the old half-life a
+ * perfectly good trade road would visibly rot between users.
+ */
+const DECAY_HALFLIFE = 1400;
 
 export function roadFrac(w) {
   return w <= 0 ? 0 : Math.min(1, w / WEAR_FULL);
@@ -102,16 +108,30 @@ export function armCount(wear, tx, ty) {
 }
 
 /**
- * Find the best place to found a town: a busy junction, well away from the
- * towns that already exist. Returns null if nothing qualifies yet.
+ * Find the best place to found a town in each region: a busy junction, well
+ * away from the towns that already exist. Returns an array indexed by region,
+ * holding that region's best candidate or null.
+ *
+ * One global best was enough when the map was one country. It is actively wrong
+ * once the map has four, because there is only ever *one* frontier on offer and
+ * it is always in whichever territory the roads happen to be thickest. Every
+ * caravan on the map scores the same junction, the busiest region takes slot
+ * after slot, and the far side of the mountains never gets looked at — which is
+ * the exact failure the per-region cap in `towns.js` exists to prevent, arriving
+ * one step earlier. Keeping a candidate per region lets a caravan standing in
+ * the desert weigh up the desert's own best crossroads against a much better one
+ * three hundred tiles away, and sometimes take the near one.
+ *
+ * Still one pass over the map: the regions are a bucket to keep the best in, not
+ * a reason to scan again.
  */
-export function bestJunction(state, minArms, minWear, minDistance) {
-  const { wear, towns } = state;
-  let best = null;
+export function bestJunctions(state, minArms, minWear, minDistance, regionCount) {
+  const { wear, towns, terrain } = state;
+  const best = new Array(regionCount).fill(null);
   // Step 2 because a junction is several tiles wide; checking every tile just
   // costs time to find the same spot. The border margin keeps towns off the
   // edge of the world, where half the roads through them would be off-map.
-  const EDGE = 26;
+  const EDGE = 38;
   for (let ty = EDGE; ty < MAP.h - EDGE; ty += 2) {
     for (let tx = EDGE; tx < MAP.w - EDGE; tx += 2) {
       const i = ty * MAP.w + tx;
@@ -121,8 +141,9 @@ export function bestJunction(state, minArms, minWear, minDistance) {
       const arms = armCount(wear, tx, ty);
       if (arms < minArms) continue;
       const score = wear[i] * arms;
-      if (!best || score > best.score) {
-        best = { tx, ty, x: wx, y: wy, arms, wear: wear[i], score };
+      const region = terrain.region[i];
+      if (!best[region] || score > best[region].score) {
+        best[region] = { tx, ty, x: wx, y: wy, arms, wear: wear[i], score, region };
       }
     }
   }

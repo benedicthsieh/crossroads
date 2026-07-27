@@ -16,16 +16,17 @@
 // Everything in here is plain data and deterministic. All randomness goes
 // through `state.rng` or through `hash3`.
 
-import { MAP, TILE, T, tileIndex, tileCentre, terrainCost } from './terrain.js';
+import { MAP, TILE, T, WORLD, tileIndex, tileCentre, terrainCost } from './terrain.js';
 import { depositTrail, moveCost } from './roads.js';
 import { findPath } from './paths.js';
 import {
-  townAt, TOWN_SPACING, MAX_TOWNS, foundTown, housing, population, pitchTents,
+  townAt, TOWN_SPACING, canFound, foundTown, housing, population, pitchTents,
 } from './towns.js';
 import {
   stockOf, storeCapacity, loadCargo, tradeAt, unloadCargo, cargoIcon,
-  WAGON_TIMBER, PROVISIONS,
+  luxuryStanding, WAGON_TIMBER, PROVISIONS,
 } from './economy.js';
+import { complement } from './luxuries.js';
 
 /** People in one covered wagon. Fixed, so `souls` and `wagons` never disagree. */
 export const SOULS_PER_WAGON = 5;
@@ -33,32 +34,49 @@ export const MAX_WAGONS = 3;
 
 /**
  * How many caravans may be on the road at once. Small on purpose — this is the
- * number that decides how busy the map *looks*, and a dozen wagon trains on a
- * 420x280 map is a trade route, not a crowd.
+ * number that decides how busy the map *looks*, and a couple of dozen wagon
+ * trains on an 840x560 map is a trade route, not a crowd.
+ *
+ * Doubled rather than quadrupled when the map was doubled on each axis, which
+ * is a deliberate thinning: the world was made bigger to feel emptier, and four
+ * times the traffic would have put it back exactly where it started. What it
+ * costs is road formation — half the wear per unit area — and that is paid for
+ * by `WEAR_PER_UNIT` and by keeping the gates sparse rather than by more
+ * wagons.
  *
  * Set a little above the steady state the spawn rates actually produce. When
  * this cap binds it stops being a safety limit and starts being policy: border
  * arrivals and emigrants both bail out at it, so a map saturated with trade
  * runs would quietly stop founding and filling towns altogether.
  */
-export const MAX_CARAVANS = 22;
+export const MAX_CARAVANS = 44;
 
 /**
  * Wear laid down per world unit, per wagon. A loaded wagon cuts ruts a walker
  * never would, which is what lets a handful of caravans wear in roads at the
  * same rate a few dozen individual travellers used to.
+ *
+ * Raised with the map. Four times the ground and only twice the traffic means
+ * each tile sees half the boots it used to; without this the first junction
+ * would take four times as long to reach `FOUND_WEAR` and the frontier would
+ * have closed before anybody could settle it.
  */
-const WEAR_PER_UNIT = 0.015;
+const WEAR_PER_UNIT = 0.023;
 const wearRate = (c) => WEAR_PER_UNIT * (1.6 + 0.8 * c.wagons);
 
 const GOODS = ['wheat', 'bread', 'crate', 'basket', 'log'];
 
-/** What a load of raw material looks like slung over a drover's shoulder. */
-const CARGO_ITEM = { wood: 'log', stone: 'stone', food: 'wheat' };
+/**
+ * What a load looks like slung over a drover's shoulder.
+ *
+ * Staples show what they are; luxuries all show as a crate, because that is how
+ * you carry something worth stealing. It also keeps the three of them
+ * indistinguishable on the road and distinguishable in the popup over a
+ * market — which is the right way round.
+ */
+const CARGO_ITEM = { log: 'log', stone: 'stone', wheat: 'wheat', spice: 'crate', herb: 'crate', gem: 'crate' };
 function carriedItem(cargo) {
-  const icon = cargoIcon(cargo);
-  return icon === 'log' ? CARGO_ITEM.wood : icon === 'stone' ? CARGO_ITEM.stone
-    : icon === 'wheat' ? CARGO_ITEM.food : null;
+  return CARGO_ITEM[cargoIcon(cargo)] || null;
 }
 
 /**
@@ -104,8 +122,11 @@ export function findGates(terrain) {
 
   // Sparse on purpose, and kept sparse as the map grew. Every extra gate is
   // another corridor for traffic to spread across, and a road network only
-  // forms where traffic concentrates.
-  const stride = 48;
+  // forms where traffic concentrates. Widened along with the map so that the
+  // *density* of gates fell rather than held: doubling the map on each axis at
+  // the old stride would have given fifty-odd doors into the world and no two
+  // caravans would ever have used the same one.
+  const stride = 72;
   for (let x = stride; x < MAP.w - stride / 2; x += stride) {
     consider(x, 2, 0, 1);
     consider(x, MAP.h - 3, 0, 1);
@@ -162,27 +183,61 @@ const W = {
  * been priced out. Two towns, and the map stopped. The frontier has to stay
  * open at least as long as it takes a third and fourth crossroads to form.
  */
-const FRONTIER_HALFLIFE = 2600;
+const FRONTIER_HALFLIFE = 4400;
 export function frontierPressure(state) {
   return Math.pow(0.5, state.time / FRONTIER_HALFLIFE);
 }
 
+/**
+ * What a "long journey" is worth, in world units.
+ *
+ * Every weight in `W` is priced against this, so it is the one number that has
+ * to move when the map does. Left at 1000 on a world two and a half times as
+ * wide, a trip to the next region costs five points of distance against a
+ * founding bonus of three, and no caravan ever crosses a mountain range again —
+ * the map would settle into four sealed pockets that never trade.
+ *
+ * Tied to the map rather than typed in, so this stays true if the world is
+ * resized again.
+ */
+const LEG_UNIT = WORLD.w * 0.4;
+
 /** Distance a caravan will happily keep travelling before it starts looking for a home. */
-const ROAM_RANGE = 3400;
+const ROAM_RANGE = 6800;
 
 /** A caravan needs this many people aboard before it can start a town alone. */
 const FOUND_SOULS = 10;
 
-/** Everything a settlement offers, normalised to roughly 0..2. */
+/**
+ * How far a trade run will go out of its way for something it cannot get at
+ * home, in `LEG_UNIT`s per point of complementarity.
+ *
+ * Three families of luxury score at most about 2.6 between two towns, so at 0.9
+ * a run will cross roughly two "long journeys" of extra distance to reach a
+ * complete stranger rather than call on the neighbour it saw last week. Turn it
+ * down and the map trades locally and the regions never meet; turn it up and
+ * every wagon on the map is on the same continental circuit.
+ */
+const TRADE_APPEAL = 0.9;
+
+/**
+ * Everything a settlement offers, normalised to roughly 0..2.
+ *
+ * Standing counts toward prosperity, so a town that has traded for spice and
+ * herbs is visibly more attractive to settle in than one of the same size that
+ * has not. That is the only place luxuries touch a caravan's decision, and it
+ * is enough: it means a well-connected town fills its beds faster, builds
+ * faster, and sends more trade runs out, which is the loop closing.
+ */
 function townDraw(state, town) {
   const free = Math.max(0, housing(town) - population(town));
   return {
     vacancy: Math.min(2, free / 8),
-    prosperity: Math.min(2, town.buildings.length / 9),
+    prosperity: Math.min(2, town.buildings.length / 9 + luxuryStanding(town) / 7),
   };
 }
 
-const legCost = (from, to) => Math.hypot(to.x - from.x, to.y - from.y) / 1000;
+const legCost = (from, to) => Math.hypot(to.x - from.x, to.y - from.y) / LEG_UNIT;
 
 /**
  * Score every option this caravan has and return the best one.
@@ -214,13 +269,18 @@ export function chooseGoal(state, c) {
   // --- stop at an empty crossroads and start one ----------------------------
   // Only worth evaluating if this caravan is big enough to be a village on its
   // own; a single wagon that stops in the middle of nowhere is just lost.
-  // `state.frontier` is the best unclaimed junction on the map, recomputed on
-  // its own slow timer rather than here — scanning 29,000 tiles every time a
-  // caravan finishes a leg would dominate the whole simulation.
-  if (c.souls >= FOUND_SOULS && state.towns.length < MAX_TOWNS
-      && state.time >= (c.noFoundUntil || 0)) {
-    const spot = state.frontier;
-    if (spot) {
+  // `state.frontiers` holds the best unclaimed junction in each region,
+  // recomputed on its own slow timer rather than here — scanning 470,000 tiles
+  // every time a caravan finishes a leg would dominate the whole simulation.
+  //
+  // One option per region, all scored against each other and against the towns.
+  // A caravan therefore weighs "the good crossroads in the next country" against
+  // "the passable one I am standing next to", and distance decides — which is
+  // how every region ends up settled without anything going round assigning
+  // quotas.
+  if (c.souls >= FOUND_SOULS && state.time >= (c.noFoundUntil || 0)) {
+    for (const spot of state.frontiers) {
+      if (!spot || !canFound(state, spot.x, spot.y)) continue;
       const room = Math.min(1, nearestTownDistance(state, spot) / (TOWN_SPACING * 1.6));
       const score = (spot.arms - 2) * W.arms
         + Math.min(1.5, spot.wear) * W.wear
@@ -260,7 +320,7 @@ function nearestTownDistance(state, at) {
 
 /** A gate a good way off, so "crossing the map" actually crosses some of it. */
 function farGate(state, from, rng) {
-  const far = state.gates.filter((g) => Math.hypot(g.x - from.x, g.y - from.y) > 900);
+  const far = state.gates.filter((g) => Math.hypot(g.x - from.x, g.y - from.y) > LEG_UNIT);
   const pool = far.length ? far : state.gates;
   return pool.length ? rng.pick(pool) : null;
 }
@@ -322,10 +382,17 @@ export function spawnBorderCaravan(state) {
   return c;
 }
 
-/** Seconds between border arrivals, growing as the world fills up. */
-const BORDER_BASE = [9, 19];
+/**
+ * Seconds between border arrivals, growing as the world fills up.
+ *
+ * Both halves were loosened for the bigger map. A caravan now takes two and a
+ * half times as long to cross it, so the same interval puts far fewer of them
+ * on the ground at once; and the taper has to outlast four regions filling up
+ * rather than one, or the far side of the map never sees a stranger.
+ */
+const BORDER_BASE = [6, 13];
 export function borderInterval(state, rng) {
-  const slack = 1 + Math.pow(state.time / 900, 1.35);
+  const slack = 1 + Math.pow(state.time / 1500, 1.35);
   return rng.range(BORDER_BASE[0], BORDER_BASE[1]) * slack;
 }
 
@@ -385,10 +452,26 @@ export function spawnTradeCaravan(state, town) {
   // surplus on the road, and that surplus is what the next town builds with.
   c.cargo = loadCargo(town, wagons);
   c.carry = carriedItem(c.cargo) || c.carry;
-  // One or two stops, nearest-first, then home again.
+
+  // Where to take it. This used to be "the nearest one or two towns", which is
+  // the right answer when everything on the map is timber and rock — a staple
+  // is a staple wherever you buy it, so you buy it next door.
+  //
+  // It is the wrong answer once regions hold different things. What a run is
+  // worth is what the other end has that this town lacks, and the whole point
+  // of the spice being in one corner of the map is that the corner is a long
+  // way away. So distance is still a cost, and complementarity is now a reason
+  // to pay it. A settlement with a shelf full of everything trades locally; one
+  // that has never seen a gem will send its wagons over a mountain range.
+  const home = stockOf(town);
   const stops = partners
-    .map((t) => ({ t, d: Math.hypot(t.x - town.x, t.y - town.y) }))
-    .sort((a, b) => a.d - b.d)
+    .map((t) => ({
+      t,
+      score: complement(home, stockOf(t)) * TRADE_APPEAL
+        - Math.hypot(t.x - town.x, t.y - town.y) / LEG_UNIT
+        + rng.range(-0.2, 0.2),
+    }))
+    .sort((a, b) => b.score - a.score)
     .slice(0, rng.chance(0.35) ? 2 : 1);
   c.legs = stops.map(({ t }) => ({ x: t.x, y: t.y, kind: 'market', townId: t.id }));
   c.legs.push({ x: town.x, y: town.y, kind: 'home', townId: town.id });
@@ -444,7 +527,7 @@ function waysides(state, c, exit, limit) {
       const detour = out + Math.hypot(exit.x - t.x, exit.y - t.y) - direct;
       if (detour < bestDetour) { bestDetour = detour; best = t; }
     }
-    if (!best || bestDetour > 520) break;
+    if (!best || bestDetour > LEG_UNIT * 0.55) break;
     picked.push(best);
     seen.add(best.id);
     at.x = best.x;
@@ -452,6 +535,17 @@ function waysides(state, c, exit, limit) {
   }
   return picked;
 }
+
+/**
+ * How long a caravan beelines before asking A* again, after a search that gave
+ * up. Not cosmetic: a failed search is the most expensive thing in the
+ * simulation — it is the one that explored the whole map before admitting
+ * defeat — and the caller's fallback leaves `c.path` null, so without a cooldown
+ * the caravan re-runs that same doomed search on *every tick* for as long as it
+ * is stuck. One caravan hemmed in behind a lake can eat the entire frame
+ * budget. Ask again in a few seconds, from somewhere else.
+ */
+const REPATH_BACKOFF = 5;
 
 function repath(state, c) {
   const leg = c.legs[c.leg];
@@ -463,6 +557,7 @@ function repath(state, c) {
   c.path = findPath(state, tileIndex(sx, sy), tileIndex(gx, gy), c.seed);
   c.pi = 0;
   state.stats.paths++;
+  if (!c.path) c.noPathUntil = state.time + REPATH_BACKOFF;
 }
 
 /**
@@ -525,7 +620,7 @@ function arriveLeg(state, c) {
   if (leg && leg.kind === 'found') {
     // Somebody else may have taken the spot, or the junction may have faded.
     const clash = state.towns.some((t) => Math.hypot(t.x - c.x, t.y - c.y) < TOWN_SPACING);
-    if (!clash && state.towns.length < MAX_TOWNS) {
+    if (!clash && canFound(state, c.x, c.y)) {
       const town = foundTown(state, c.x, c.y);
       if (town) { settle(state, c, town, true); return; }
     }
@@ -591,10 +686,11 @@ export function updateCaravan(state, c, dt) {
   if (!leg) { c.done = true; return; }
 
   if (!c.path) {
-    repath(state, c);
+    if (state.time >= (c.noPathUntil || 0)) repath(state, c);
     if (!c.path) {
-      // A* gave up — almost always a caravan hemmed in by water. Beeline it and
-      // let the next repath sort things out.
+      // A* gave up, or gave up recently enough that it isn't worth asking again
+      // — almost always a caravan hemmed in by water. Beeline it and let the
+      // next repath sort things out.
       const dx = leg.x - c.x, dy = leg.y - c.y;
       const d = Math.hypot(dx, dy) || 1;
       if (d < 8) { arriveLeg(state, c); return; }

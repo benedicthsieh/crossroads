@@ -519,6 +519,44 @@ export function iconSprite(name, scale = STYLE.scale) {
       px.shadeOver(5, 3, 3, 5, p.stoneDark);
       px.fill(1, 5, 7, 1, p.stoneDark);              // the course line
       break;
+    // --- luxuries ----------------------------------------------------------
+    // Nine pixels is not much to distinguish three goods with, so each one
+    // leans on a different *shape* rather than on colour: spice is a heap,
+    // herbs are a sprig, gems are the only thing on the map with straight
+    // diagonal edges. At whole-map zoom the shape is all that survives.
+    case 'spice': {
+      // A heap of ground spice, poured out on a cloth.
+      px.fill(1, 7, 7, 1, p.spiceDark);
+      px.fill(2, 5, 5, 2, p.spice);
+      px.fill(3, 4, 3, 1, p.spice);
+      px.fill(4, 3, 1, 1, lighten(p.spice, 0.4));
+      px.shadeOver(5, 4, 3, 3, p.spiceDark);
+      px.set(3, 5, lighten(p.spice, 0.3));
+      break;
+    }
+    case 'herb': {
+      // A tied sprig: stem, three leaves, one flower head.
+      px.line(4, 8, 4, 3, p.herbDark);
+      px.fill(2, 5, 2, 1, p.herb);
+      px.fill(5, 6, 2, 1, p.herb);
+      px.fill(2, 3, 2, 1, p.herb);
+      px.set(1, 4, p.herbDark);
+      px.set(6, 5, p.herbDark);
+      px.fill(4, 1, 2, 2, p.herbFlower);
+      px.set(4, 1, lighten(p.herbFlower, 0.35));
+      break;
+    }
+    case 'gem': {
+      // Cut stone: a flat table, a bright facet on the left, a dark one right.
+      px.fill(2, 2, 5, 1, lighten(p.gem, 0.45));     // table
+      px.fill(1, 3, 7, 2, p.gem);
+      px.fill(2, 5, 5, 1, p.gem);
+      px.fill(3, 6, 3, 1, p.gemDark);
+      px.set(4, 7, p.gemDark);
+      px.shadeOver(5, 3, 3, 4, p.gemDark);
+      px.set(2, 3, lighten(p.gem, 0.55));            // the glint
+      break;
+    }
     case 'basket':
       px.fill(2, 2, 1, 1, p.wood);                   // handle
       px.fill(4, 1, 1, 1, p.wood);

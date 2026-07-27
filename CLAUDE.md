@@ -35,8 +35,17 @@ An idle/simulation game about roads. Nothing on the map is authored: caravans
 cross terrain, walking wears the ground down, worn ground is cheaper to walk, so
 traffic concentrates into roads, roads meet at crossroads, and a caravan that
 likes the look of a crossroads stops there for good. Terrain (rivers, mountains,
-hills, forest, grassland) exists to make some ground expensive so that traffic
-has a reason to concentrate at all.
+hills, forest, desert, grassland) exists to make some ground expensive so that
+traffic has a reason to concentrate at all.
+
+The map is divided into four **regions**, and that division *is* authored — it is
+the one thing on the map that is. Four seeded sites carve the world into warped
+Voronoi territories and the boundaries between them get an elevation lift, so
+mountain ranges and the rivers draining them fall along the same lines. One
+region is arid. The reason for all of it is trade: regions hold different
+**luxuries** (spice only on desert, herbs varying by latitude, gems from a few
+scattered lodes), a town cannot supply itself with all three, and the long roads
+between territories are the ones no staple would ever have justified.
 
 Travel happens in **caravans** — one pathing entity, five souls per covered
 wagon, up to three wagons. That is a scale decision, not a flavour one: a
@@ -73,7 +82,8 @@ js/props.js         buildings, wagons, stalls, trees, crags, rocks, reeds
 
 js/sim/             GAME STATE. No DOM, no canvas, no Math.random().
   rng.js            seeded PRNG (state is one uint32) + stateless hash3
-  terrain.js        map generation from a seed; tile costs; queries
+  terrain.js        map generation from a seed; regions; tile costs; queries
+  luxuries.js       spice, herbs and gems: where they come from, what they buy
   roads.js          the wear field: deposit, decay, cost blending, junctions
   paths.js          A* over the tile grid
   caravans.js       wagon trains, the objective function, and depositTrail()
@@ -117,8 +127,20 @@ and stepping the same `dt` sequence stay in exact lockstep — there's a test fo
 it (see below). Adding a `Math.random()` inside `js/sim/` silently breaks that.
 
 **Terrain is derived, never stored.** `generateTerrain(seed)` is pure. Snapshots
-store the seed, not 117,600 tiles. Same for gates (`findGates`) and scenery
-(`buildScenery`). The only thing the sim mutates about the map is `wear`.
+store the seed, not 470,400 tiles. Same for gates (`findGates`), region
+membership (`regionAt`), gem lodes and scenery (`buildScenery`). The only thing
+the sim mutates about the map is `wear`. A town carries `region` as a field, but
+that is a cache of `regionAt(town.x, town.y)` recomputed on restore, not state.
+
+**Regions are the one authored thing, and they are authored in the terrain.**
+There is no region logic anywhere outside `terrain.js` — no zoning pass, nothing
+assigning quotas. What exists is a per-tile `region` id and an elevation lift
+along the seams, and every regional behaviour downstream falls out of ordinary
+rules reading it: `bestJunctions` keeps a candidate crossroads *per* region so
+every territory is on the table when a caravan decides, `canFound` caps towns per
+region as well as globally, and trade runs score partners on what they hold
+rather than how near they are. Keep it that way. The moment something starts
+placing towns to balance the regions, the map stops explaining itself.
 
 **Terrain is derived; so is a town's survey of it.** `surveyLand()` counts what
 is within reach of a town — forest, water, rock, open ground — and it is a pure
@@ -170,6 +192,15 @@ leverage:
 | `sim/caravans.js` | `stride` in `findGates` | fewer gates = more concentrated traffic |
 | `sim/terrain.js` | `MAP`, `BASE_COST`, `FORD_COST` | map size; how hard each terrain pushes back |
 | `sim/terrain.js` | percentile thresholds in `generateTerrain` | terrain proportions (locked by percentile, so every seed matches) |
+| `sim/terrain.js` | `DIVIDE_WIDTH`, the `lift` term | how hard the regions are separated, and how many passes through |
+| `sim/terrain.js` | `LODES`, `LODE_GAP`, `LODE_REACH` | how rare gems are — most maps should have one or two gem towns |
+| `sim/terrain.js` | `LAKE_FRACTION`, `RIVERS`, `FORD_SPACING` | how much the water cuts the map up, and how many crossings |
+| `sim/caravans.js` | `LEG_UNIT` | what "a long journey" is worth. Every weight in `W` is priced against it, so it moves when the map does |
+| `sim/caravans.js` | `TRADE_APPEAL` | how far a trade run will go for something it can't get at home |
+| `sim/luxuries.js` | `SATED`, `VARIETY_BONUS`, `LUXURY_CAP` | how much variety beats tonnage, and how often a town must re-import |
+| `sim/luxuries.js` | `SPICE_CEILING`, `HERB_CEILING`, `GEMS_PER_LODE` | how fast each luxury accumulates |
+| `sim/economy.js` | `LUXURY_TRAFFIC` | what standing is actually worth, in buildings |
+| `sim/towns.js` | `MAX_PER_REGION`, `MAX_TOWNS` | 2–5 towns per region is the target; the global cap is below 4x5 on purpose |
 | `sim/roads.js` | `WEAR_PER_UNIT` (in caravans.js), `WEAR_FULL` | how fast roads form |
 | `sim/roads.js` | `DECAY_HALFLIFE`, `ROAD_COST` | how long an unused road survives; what a finished one costs |
 | `sim/towns.js` | `TOWN_SPACING`, `MAX_TOWNS` | how far apart towns must be, and the hard cap |
@@ -182,13 +213,26 @@ leverage:
 | `sim/state.js` | `FOUND_WEAR`, the rate in `considerTrade` | how mature a junction must be to settle; how busy the roads look |
 | `props.js` | `UNIT.building` | how much ground a building sprite covers |
 
-Current tuning lands 5 towns inside the first two real minutes at 16× on a
-420×280-tile map, and then holds there — the count is the target, the pace is
-deliberately brisk so a session has something to look at early. To stretch it
-out, raise `FOUND_WEAR` or cut `WEAR_PER_UNIT`; do **not** shorten
+Current tuning lands 11–14 towns across four regions on an 840×560-tile map
+inside about 40 simulated minutes, and then holds there — the count is the
+target, the pace is deliberately brisk so a session has something to look at
+early. A region typically ends up with two to five; the arid one usually gets
+fewer, which is the map telling the truth about itself rather than a bug. To
+stretch it out, raise `FOUND_WEAR` or cut `WEAR_PER_UNIT`; do **not** shorten
 `FRONTIER_HALFLIFE`, which changes where the run ends up rather than how long it
 takes (see the note in `docs/EMERGENCE.md` — that mistake cost a couple of towns
 and took a diagnostic run to find).
+
+**Doubling the map is not one constant.** `MAP` is the easy half. The half that
+bites is everything priced in world units against the *old* map, and leaving any
+of it alone produces a map that looks right and behaves like four sealed
+pockets. In rough order of how badly it breaks things: `LEG_UNIT` in
+`caravans.js` (every weight in `W` is a ratio against it — left at 1000, nothing
+ever crosses a range again), `MIN_COST` in `paths.js` (A* with a heuristic tuned
+for a quarter of the tiles fans out into a disc and gives up mid-journey),
+`stride` in `findGates`, `ROAM_RANGE`, `WEAR_PER_UNIT` and `DECAY_HALFLIFE`
+(four times the ground and twice the traffic means half the boots per tile),
+`MAX_EXPANSIONS`, `TOWN_SPACING`, and the `EDGE` margin in `bestJunctions`.
 
 ## Running and testing
 
@@ -201,16 +245,36 @@ Playwright — Chromium is preinstalled in the cloud environment at
 `/opt/pw-browsers/chromium-*/chrome-linux/chrome`, so launch with an explicit
 `executablePath`. The checks worth re-running after a sim change:
 
-- **No console errors** and 60fps at whole-map zoom, after a few minutes at 16×.
+- **No console errors**, after a few minutes at 16×.
+- **Frame cost, not frame rate.** The cloud container renders in software and
+  tops out around 50fps on an *empty* canvas, so measured fps there means
+  nothing. Time `drawScene` directly instead (import it in the page and call it
+  in a loop). It should come in around 20ms at whole-map zoom, and under 5ms at
+  Town zoom and closer, on a 1400×900 viewport with the map fully settled. If
+  whole-map zoom has crept far above that, suspect the scenery: `r.statics` runs
+  to about thirteen thousand props, and `CLUTTER` / `sceneryCoverage` in
+  `render/scene.js` are what keep the zoomed-out case affordable.
 - **Terrain proportions** across half a dozen seeds — import
   `/js/sim/terrain.js` in the page and count `kind` values. Water should be
-  ~2%, mountain ~9%, hills ~15%, forest ~20%, grass ~54%.
+  ~6%, mountain ~14%, hills ~14%, forest ~18%, desert ~11%, grass ~37%. Desert
+  should be lopsided by region: 35–50% of the arid one and near zero elsewhere.
+- **Every region gets settled.** Count towns by `town.region` after 30–40
+  simulated minutes. Two to five each is the target and one is a bad sign — it
+  usually means `bestJunctions` has gone back to reporting a single global best,
+  which quietly hands every slot to whichever territory the roads are thickest
+  in.
+- **Luxuries actually circulate.** After 45 simulated minutes most seeds should
+  have all three families in play and towns holding jars they cannot possibly
+  have grown — spice in a region with no sand in it is the one to look for,
+  because it can only have arrived by road. Gems are meant to be rare: one or
+  two gem towns on most maps and none at all on some is correct, none on *every*
+  map means the lodes are landing where nobody can reach them.
 - **Determinism**: snapshot a live game, `restore()` it twice, step both a few
   hundred ticks, and confirm rng state, wear sum, caravan and resident positions
   match.
 - **Save/load through the UI**: Save → New map → Load should come back to the
   original seed.
-- **Towns converge**: 4–5 towns after ~5 real minutes at 16×, and a town that is
+- **Towns converge**: 11–14 towns after ~40 simulated minutes, and a town that is
   mostly houses with a well in it means the cap in `nextBuild` has drifted.
 - **The economy is not stuck.** The sim runs headlessly under plain `node` (no
   DOM anywhere in `js/sim/`), which is far faster than driving the page — import
@@ -221,11 +285,15 @@ Playwright — Chromium is preinstalled in the cloud environment at
   at 0 everywhere (nothing is quarrying), stores pinned at the store cap for the
   whole run (materials have stopped being a constraint), or a town of a dozen
   houses and three trades (the plan has stalled on a material it cannot get).
-- **A caravan can always get somewhere.** The failure mode to watch for is a
-  caravan that decides, arrives, is refused, and re-decides in the same tick —
-  it shows up as `state.stats.paths` climbing into the tens of thousands. Both
-  refusal paths in `arriveLeg` go through `turnedAway`, which rests first for
-  exactly this reason.
+- **A caravan can always get somewhere.** Two failure modes, both visible as
+  `state.stats.paths` climbing into the tens of thousands. One is a caravan that
+  decides, arrives, is refused, and re-decides in the same tick — both refusal
+  paths in `arriveLeg` go through `turnedAway`, which rests first for exactly
+  this reason. The other is a caravan whose A* search *fails* and is therefore
+  re-run every tick, which is far more expensive because a failing search is the
+  one that explored the whole map first; `REPATH_BACKOFF` in `caravans.js` is
+  what stops one stuck wagon eating the entire frame budget. Expect a few hundred
+  paths per 40 simulated minutes, not thousands.
 
 `window.CROSSROADS` exposes `state`, `snapshot()`, `renderer()` and `cam` for
 poking at a running game from the console or from Playwright.
@@ -234,6 +302,16 @@ poking at a running game from the console or from Playwright.
 
 - Rivers are steepest-descent with an outlet bias rather than a proper
   priority-flood, so a few still end in a pond rather than reaching the edge.
+- Nothing guarantees a region is *reachable* except that no terrain is truly
+  impassable — mountain costs 8 and unforded water costs 60, so A* always finds
+  something. A seed whose passes all land badly will have a region that traffic
+  visibly avoids rather than one it cannot enter.
+- The desert region regularly settles fewer towns than the others, sometimes
+  only one. That is the ground being poor, and it is the intended shape, but it
+  does mean the spice supply on some maps hangs on a single settlement.
+- Terrain generation is about half a second and the terrain bake a good deal
+  more, so a new map takes a few seconds to appear. Both are one-off costs and
+  neither is in the frame loop, but "New map" is no longer instant.
 - Town buildings can overlap slightly; the spacing check is a squashed-circle
   distance, not the actual sprite footprint.
 - Caravans don't avoid each other. At a busy town gate they overlap.

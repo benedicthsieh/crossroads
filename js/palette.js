@@ -35,6 +35,18 @@ const SHARED = {
   white: '#f6efe2',
   coin: '#f2c14b',
   coinDark: '#b8862a',
+  // Luxury goods. Shared across all three palettes on purpose: these only ever
+  // appear as nine-pixel icons in a popup, and an icon that has to read at a
+  // glance against grass, sand and lamplight wants one memorable colour rather
+  // than a palette-correct one. Spice is paprika, herbs are the one green that
+  // is not a leaf on this map, and gems are the only cold hue in the game.
+  spice: '#c8622e',
+  spiceDark: '#8f3f1c',
+  herb: '#7cb04e',
+  herbDark: '#4d7830',
+  herbFlower: '#d6e07a',
+  gem: '#63d2e6',
+  gemDark: '#2c7f9c',
 };
 
 export const PALETTES = {
@@ -45,6 +57,8 @@ export const PALETTES = {
     grassDeep: '#4f7f39',
     dirt: ['#bd8f5f', '#c69a6b', '#b0824f'],
     dirtDeep: '#9b6c41',
+    sand: ['#dcc188', '#e6cf9a', '#cfb075', '#f0dcae'],
+    sandDeep: '#b8935c',
     plaza: ['#c8a377', '#d0ad82', '#bd9569'],
     stone: '#a2aab4',
     stoneDark: '#7d8794',
@@ -92,6 +106,8 @@ export const PALETTES = {
     grassDeep: '#54704a',
     dirt: ['#a89078', '#b19a82', '#9c8369'],
     dirtDeep: '#8a7057',
+    sand: ['#c9b894', '#d3c3a2', '#bba983', '#dfd2b4'],
+    sandDeep: '#a89470',
     plaza: ['#b3a189', '#bcab94', '#a6947c'],
     stone: '#9aa0a4',
     stoneDark: '#787f85',
@@ -138,6 +154,8 @@ export const PALETTES = {
     grassDeep: '#3f8c34',
     dirt: ['#d09a5c', '#dba769', '#bd8a4c'],
     dirtDeep: '#a36f38',
+    sand: ['#f0d089', '#fbe09c', '#e0bc72', '#fff0b4'],
+    sandDeep: '#c9a355',
     plaza: ['#e0b478', '#ecc186', '#cea369'],
     stone: '#adb8c4',
     stoneDark: '#84909e',

@@ -7,10 +7,12 @@
 import { snapshot, restore, SAVE_VERSION } from './state.js';
 
 // Versioned key rather than a versioned payload check: a v2 save describes a
-// world of lone travellers and has no caravans in it at all, and a v3 one
-// describes towns with no stores, no tents and no fields. Neither is worth
+// world of lone travellers and has no caravans in it at all, a v3 one describes
+// towns with no stores, no tents and no fields, and a v4 one is a map a quarter
+// of the size with no deserts, regions or luxuries in it — its towns would come
+// back standing on ground that is now the middle of a lake. None is worth
 // migrating. Bumping the key just makes the old one invisible.
-const KEY = 'crossroads.save.v4';
+const KEY = 'crossroads.save.v5';
 
 export function saveLocal(state) {
   try {

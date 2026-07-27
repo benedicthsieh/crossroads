@@ -4,8 +4,20 @@ Nothing in Crossroads places a road, a junction or a town. There is no planner,
 no zoning pass, no "found a settlement here" rule watching the map from above.
 What there is instead is a handful of agents that each want something cheap and
 local, and a world that is deliberately awkward to cross. Everything you end up
-looking at — the trunk roads, the fords that became bridges, the four or five
+looking at — the trunk roads, the fords that became bridges, the dozen or so
 towns and the empty quarters between them — falls out of the interaction.
+
+One thing *is* authored, and it is worth naming up front because everything in
+section 2 leans on it: the map is divided into four **regions**, and the
+division is drawn into the terrain rather than enforced by a rule. Four seeded
+sites carve the world into warped territories, the seams between them are lifted
+into mountain ranges, and the rivers draining those ranges run away from the
+seam on both sides. Nothing downstream knows about regions except as an ordinary
+tile property. What the division buys is scarcity with a *geography*: spice grows
+only in the arid territory, herbs change with latitude, and gems come out of a
+few scattered lodes. A town cannot supply itself with all three, so the roads
+between regions get walked — and those are roads that timber and stone would
+never have justified.
 
 This document is the map of those behaviours: what each actor wants, what it
 measures, and which loop it closes. It is written to be read next to the code;
@@ -24,6 +36,10 @@ different scales.
 | **Town** | `js/sim/towns.js` | What to build next; when to send people away, and whether they come back | Once a second |
 | **Town's economy** | `js/sim/economy.js` | What its people spend the day doing | Once a second |
 | **Resident** | `js/sim/residents.js` | Which building to walk to | Once per errand |
+
+The map itself decides nothing, but it holds two things the actors read
+constantly: which region a tile is in, and what that region can grow
+(`js/sim/terrain.js`, `js/sim/luxuries.js`).
 
 A caravan that has a `home` is on a trade circuit and does not re-decide — a
 merchant's round is not an existential choice. Everything else scores its
@@ -57,7 +73,7 @@ is a hard rule rather than a low score, because a caravan standing in the middle
 of a full town has a travel cost of zero, and "low but nearest" would win
 forever.
 
-**Found a town at the best empty crossroads.**
+**Found a town at the best empty crossroads — one option per region.**
 
 ```
 (arms − 2) × 0.95  +  wear × 0.80  +  room × 1.20
@@ -70,6 +86,23 @@ founder of anything. `arms` is how many distinct
 roads meet at the junction, `wear` is how well trodden it already is, `room` is
 how far it is from the nearest existing town. The flat −1.95 is the cost of
 starting from nothing, and it is what stops hamlets sprouting at every fork.
+
+`bestJunctions` keeps the best candidate *in each region*, and all of them are
+scored together. That plural is doing real work. With a single global frontier
+there is only ever one place on offer, it is always in whichever territory the
+roads are thickest, and every caravan on the map scores the same junction — the
+busiest region takes slot after slot and the far side of the mountains is never
+looked at. With one per region, a caravan standing in the desert weighs the
+desert's own passable crossroads against a much better one three hundred tiles
+away, and distance decides. That is the whole mechanism by which every territory
+ends up settled; nothing assigns quotas.
+
+`distance` is measured in `LEG_UNIT`s — 40% of the map's width — rather than in
+a fixed thousand world units. That indirection is not tidiness. Every weight
+above is a ratio against it, so on a map two and a half times wider a fixed unit
+would price a trip to the next region at five points against a founding bonus of
+three, no caravan would ever cross a range again, and the world would settle into
+four sealed pockets that never trade.
 
 **Keep going, and leave by a far border.**
 
@@ -95,19 +128,28 @@ instead of spreading.
 ## 2. Frontier pressure — the convergence dial
 
 ```js
-frontierPressure(state) = 0.5 ^ (time / 2600)
+frontierPressure(state) = 0.5 ^ (time / 4400)
 ```
 
 This is the single most important number for making a map *finish*. It multiplies
-the value of founding anything, and it halves every 2600 simulated seconds. A new
+the value of founding anything, and it halves every 4400 simulated seconds. A new
 world is desperate for settlements; an old one would much rather you moved into
-one that exists.
+one that exists. The half-life went up with the map, because what it has to
+outlast is the *road network* rather than the clock, and a network four times the
+area takes correspondingly longer to grow its junctions.
 
 Without it, a long game slowly grows a village at every junction, because
 junctions keep appearing as the road network thickens. With it, the map lands on
-four or five towns inside the first couple of minutes at 16× and then *stops*,
-which is the behaviour that matters — the count converges, and the same seed
-lands on roughly the same number every time.
+eleven to fourteen towns across the four regions inside about forty simulated
+minutes and then *stops*, which is the behaviour that matters — the count
+converges, and the same seed lands on roughly the same number every time.
+
+The ceiling has two halves now. `MAX_TOWNS` is 14 and `MAX_PER_REGION` is 5, and
+14 is deliberately below 4 × 5: the regions compete for the last few slots, so a
+well-connected territory can finish with five where a mountainous one gets two,
+but none of them can take the lot. Two to five per region is the shape to expect,
+and the arid one usually comes in at the bottom of that — which is the ground
+telling the truth about itself rather than a fault.
 
 The pace is deliberately brisk — the first town usually lands inside a minute at
 16×. Slowing it down is a matter of raising `FOUND_WEAR` in `state.js` (how worn
@@ -116,7 +158,8 @@ in `caravans.js`. Shortening `FRONTIER_HALFLIFE` is *not* the way to do it: that
 changes where the run ends up, not how long it takes to get there.
 
 `MAX_TOWNS` is the ceiling and it does get reached on a good map; the pressure
-curve is what decides whether a *particular* map gets there or settles for four.
+curve is what decides whether a *particular* map gets there or settles for
+eleven.
 Both halves matter, and getting the balance wrong is easy in either direction.
 Set the half-life too short and the frontier closes before the road network has
 matured — an early version decayed so fast that a textbook crossroads (three
@@ -244,6 +287,15 @@ happens to be standing on (`js/sim/economy.js`).
 | **Stone** | mountain and hill | **a quarry has to be built first**, out of wood |
 | **Food** | hunting, fishing, farming | eaten continuously by everybody |
 
+Where a town *is* now decides more than how fast it grows. `surveyLand` counts
+desert apart from open ground rather than folding it in, and that one line is the
+whole characterisation of the waste: sand grows no scrub to cut, feeds no game
+and cannot be ploughed, so every ceiling downstream quietly skips it and
+`wantsField` refuses to ask for a plot the town could never site. A desert town
+buys its dinner or it shrinks. What it has instead is the only spice on the map,
+and that turns out to be enough — the arid region's towns run some of the highest
+standing on a settled map, because everyone comes to them.
+
 The tier line runs straight through `TOWN_PLAN`. Stall, signpost, lumberyard and
 inn are timber; the well, lamps, bakery, market, warehouse and smithy are
 masonry, and none of them can be started until stone is actually coming in. So
@@ -289,6 +341,83 @@ actually empties its stores *shrinks*, and starts pushing caravans out
 regardless of how full its beds are — which is how a badly sited settlement
 seeds a better one somewhere else instead of sitting there starving.
 
+### The regions, and what they are for
+
+Four territories, drawn by four seeded sites and a warped Voronoi split, with
+the seams lifted into mountain ranges and the rivers running off both flanks of
+each seam. The lift is modulated by a noise field so it dips in places, and those
+dips are the passes — which is the same trick the rest of the map already plays,
+one level up: make the ground expensive in a shape, leave a handful of gaps, and
+let traffic find them.
+
+What the regions *are* is an excuse for scarcity that has a geography to it.
+Three families of luxury, and each is scarce in a deliberately different shape
+(`js/sim/luxuries.js`):
+
+| | Where it comes from | The shape of the scarcity |
+| --- | --- | --- |
+| **Spice** | desert tiles in reach | **one place has it** — one region in four is arid |
+| **Herbs** | any wild ground, but the *variety* is set by latitude | **everywhere has a different one** |
+| **Gems** | a lode in reach, *and* a quarry to work it | **hardly anywhere has any** |
+
+Those three cover the three ways a thing can be hard to get, and between them
+they guarantee that no town can supply itself. A caravan that wants all three has
+to trade in three directions.
+
+None of it is a building material. That is the load-bearing restraint: a
+settlement that can never buy spice should be *poorer*, not stuck, and the
+economy already has enough ways to hard-stall on a material it cannot reach.
+What luxuries buy instead is **standing** — and standing is multiplied by how
+many different families are on the shelf, not by how much is on it. Three
+families fully stocked score 3 × 1.8 rather than 3. A desert town sitting on a
+mountain of its own spice is worth less than one that swapped half of it away.
+
+Standing feeds back in exactly two places, and both are ordinary:
+
+```
+standing → town.traffic  (0.05 a second per point — see LUXURY_TRAFFIC)
+standing → prosperity in the caravan's join score
+```
+
+Traffic is what every building in the game is already paid for with, so a town
+that trades in three directions visibly builds faster than one that trades in
+none, without a single new entry in `MATERIALS`. And because prosperity pulls
+caravans in, a well-supplied town fills its beds faster, grows faster, and sends
+more trade runs out. That is the loop closing.
+
+The counterpressure is that luxuries are *consumed*, continuously, by everybody,
+and the shelf only holds fourteen of anything. A single delivery does not settle
+the matter. The trade has to be a standing arrangement, which is what keeps the
+long roads alive after the borders have gone quiet.
+
+### Trade goes where the goods aren't
+
+A trade run used to pick the nearest one or two towns. That is the right answer
+when everything on the map is timber and rock — a staple is a staple wherever you
+buy it, so you buy it next door — and it is the wrong answer the moment regions
+hold different things. So `spawnTradeCaravan` scores partners on
+
+```
+complementarity × 0.9  −  distance in LEG_UNITs  ±  noise
+```
+
+where complementarity counts the families each end has that the other lacks, in
+both directions. Distance is still a real cost; complementarity is now a reason
+to pay it. A settlement with a full shelf trades locally. One that has never seen
+a gem will send its wagons over a mountain range.
+
+`tradeAt` finishes the job at the other end. Staples come off the wagon at a flat
+share, because everybody wants timber. Luxuries come off in proportion to how
+much the receiving town actually *lacks* them — so a wagon carrying mosswort
+through mosswort country is politely relieved of almost none of it and carries the
+rest on south to somewhere that has never smelled the stuff. The route a circuit
+takes is not planned anywhere; it falls out of who wanted what.
+
+One more small thing with a large effect: `loadCargo` fills the wagon with
+luxuries *first* and lets staples take what is left. A prosperous town has fifty
+spare timber and four jars of spice, and by weight the timber would take the
+entire load. The four jars are the reason anybody is making the journey.
+
 ### Trade moves material, not just people
 
 A trade run now loads up with whatever its home town has most to spare, drops
@@ -329,16 +458,22 @@ The caravan decisions sit on top of the original mechanic, which has not changed
 4. Wear decays with a 900-second half-life, so a route nobody uses fades.
 
 Wagons are heavier than the walkers they replaced — `1.6 + 0.8 × wagons` times
-the base rate — which is why a dozen caravans can wear in a network that used to
-take fifty individual travellers. The weighting is front-loaded rather than
+the base rate — which is why a couple of dozen caravans can wear in a network
+that used to take fifty individual travellers. The base rate itself went up when
+the map did: four times the ground carrying twice the traffic means each tile
+sees half the boots, and without the adjustment the first junction would take
+four times as long to mature as the frontier stays open for. The weighting is front-loaded rather than
 proportional because most caravans are one wagon: a lone wagon still has to lay
 down enough of a rut to matter, or a map of mostly-single wagons would never
 grow a road at all.
 
 Terrain exists purely to make step 1 non-uniform. If every tile cost the same,
-traffic would spread evenly and no road would ever form. Rivers and mountain
-ridges are near-walls with a handful of gaps; the gaps are where the roads go;
-where the roads cross is where somebody decides to stop.
+traffic would spread evenly and no road would ever form. Rivers, lakes and
+mountain ridges are near-walls with a handful of gaps; the gaps are where the
+roads go; where the roads cross is where somebody decides to stop. Sand is the
+one terrain that argues in a different currency — it is only moderately expensive
+to cross and thoroughly unrewarding to live on, so traffic skirts it without
+being stopped by it, and the roads that do cross it are there for the spice.
 
 ---
 
@@ -367,6 +502,14 @@ Things worth watching for, in roughly the order they happen:
   between them, and a road appears that no border caravan would ever have worn.
   Trade runs carry real material along it, so this is also the moment a town
   with no rock in reach gets its first stone.
+- **The pass.** The first road to cross a region boundary does not go over the
+  range, it goes through one notch in it, because that notch is where the lift
+  noise dipped. Every subsequent crossing uses the same notch, and it darkens
+  into the busiest tile on that half of the map.
+- **The spice arriving.** Watch the panel for a town in a green region listing
+  spice among what it trades in. It cannot have grown a grain of it — there is no
+  sand within thirty tiles — so it came up the road, and something had to walk
+  the length of the map to bring it.
 - **Settling down.** Frontier pressure drops, towns fill their beds, caravans
   spend longer on the road looking for somewhere with room. The map stops
   changing shape and starts thickening.
@@ -381,6 +524,8 @@ decide what they look like.
 | Where | Constant | Effect |
 | --- | --- | --- |
 | `sim/caravans.js` | `FRONTIER_HALFLIFE` | how long the map stays keen on new towns |
+| `sim/caravans.js` | `LEG_UNIT` | what a long journey is worth; every weight in `W` is a ratio against it |
+| `sim/towns.js` | `MAX_PER_REGION`, `MAX_TOWNS` | 2–5 towns a region, and no region taking the lot |
 | `sim/caravans.js` | `W.founding` | flat cost of starting a settlement |
 | `sim/caravans.js` | `ROAM_RANGE` | how far a caravan travels before it looks to settle |
 | `sim/caravans.js` | `BORDER_BASE`, the slack curve | how fast immigration tapers |
@@ -398,3 +543,9 @@ decide what they look like.
 | `sim/towns.js` | `FOOTPRINT`, the `findPlot` radius | how much a town sprawls |
 | `props.js` | `UNIT.building` | how much ground a building sprite covers |
 | `sim/roads.js` | `WEAR_FULL`, `DECAY_HALFLIFE` | how fast roads form and how long they last |
+| `sim/terrain.js` | `DIVIDE_WIDTH`, the `lift` term | how firmly the regions are walled off, and how many passes through |
+| `sim/terrain.js` | `LODES`, `LODE_REACH` | how rare gems are — one or two gem towns on most maps |
+| `sim/luxuries.js` | `SATED`, `VARIETY_BONUS` | how much variety beats tonnage |
+| `sim/luxuries.js` | `LUXURY_CAP`, `USE_PER_PERSON` | how often a town has to re-import to stay supplied |
+| `sim/economy.js` | `LUXURY_TRAFFIC` | what standing is worth, in buildings |
+| `sim/caravans.js` | `TRADE_APPEAL` | how far a run will go for something it cannot get at home |

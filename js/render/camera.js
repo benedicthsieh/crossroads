@@ -21,11 +21,18 @@ import { WORLD } from '../sim/terrain.js';
 /**
  * The zoom slider's stops. Named rather than numbered — "2.0x pixel size" is a
  * renderer implementation detail, and nobody playing wants to think about it.
+ *
+ * The bottom three were pulled down when the world was doubled on each axis.
+ * They are labels making a promise about how much you can see, and on a
+ * 5040-unit-wide map "Whole map" at 0.35 showed a bit over half of it — which is
+ * a poor thing for a game about looking at a map to be wrong about. 0.24 fits
+ * the whole world on a normal window with room to spare, and "Region" now means
+ * roughly one of the four territories rather than a vague amount of ground.
  */
 export const ZOOM_STOPS = [
-  { zoom: 0.35, label: 'Whole map' },
-  { zoom: 0.55, label: 'Region' },
-  { zoom: 0.85, label: 'Roads' },
+  { zoom: 0.24, label: 'Whole map' },
+  { zoom: 0.4, label: 'Region' },
+  { zoom: 0.62, label: 'Roads' },
   { zoom: 1.4, label: 'Town' },
   { zoom: 2, label: 'Street' },
   { zoom: 3, label: 'Close up' },

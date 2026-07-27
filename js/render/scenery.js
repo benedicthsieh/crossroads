@@ -20,6 +20,9 @@ const STEP = 14;
 function gapFor(name) {
   if (name.startsWith('tree') || name.startsWith('pine')) return 22;
   if (name.startsWith('crag')) return 26;
+  // Cacti stand well apart. Two of them shoulder to shoulder read as a hedge,
+  // and the one thing the desert must not look like is somewhere with hedges.
+  if (name.startsWith('cactus')) return 34;
   return 10;
 }
 
@@ -45,9 +48,12 @@ export function buildScenery(terrain) {
     return false;
   };
 
-  const place = (name, x, y) => {
+  const place = (name, x, y, lod) => {
     if (tooClose(x, y, gapFor(name))) return;
-    const item = { name, x: Math.round(x), y: Math.round(y) };
+    // `lod` is a stable 0..1 rank used by the renderer to thin the scenery when
+    // zoomed out. It has to be a property of the prop rather than a per-frame
+    // dice roll, or a forest would boil as the camera moved.
+    const item = { name, x: Math.round(x), y: Math.round(y), lod };
     out.push(item);
     const k = key(x, y);
     if (!buckets.has(k)) buckets.set(k, []);
@@ -71,6 +77,7 @@ export function buildScenery(terrain) {
       const r1 = hash3(gx, gy, 11);
       const r2 = hash3(gx, gy, 23);
       const r3 = hash3(gx, gy, 37);
+      const lod = hash3(gx, gy, 53);
       const x = gx + (r1 - 0.5) * STEP * 0.9;
       const y = gy + (r2 - 0.5) * STEP * 0.9;
       const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
@@ -82,7 +89,7 @@ export function buildScenery(terrain) {
       if (kind === T.WATER) continue;
 
       if (nearWater(tx, ty) && r3 < 0.45) {
-        place(`reeds${(r1 * 2) | 0}`, x, y);
+        place(`reeds${(r1 * 2) | 0}`, x, y, lod);
         continue;
       }
 
@@ -91,23 +98,33 @@ export function buildScenery(terrain) {
           if (r3 < 0.5) {
             // A few conifers mixed in, more of them on the higher ground.
             const conifer = terrain.elev[i] > 0.5 ? 0.45 : 0.16;
-            place(r1 < conifer ? `pine${(r2 * 2) | 0}` : `tree${(r2 * 3) | 0}`, x, y);
+            place(r1 < conifer ? `pine${(r2 * 2) | 0}` : `tree${(r2 * 3) | 0}`, x, y, lod);
           } else if (r3 < 0.78) {
-            place(`bush${(r1 * 3) | 0}`, x, y);
+            place(`bush${(r1 * 3) | 0}`, x, y, lod);
           }
           break;
         case T.MOUNTAIN:
-          if (r3 < 0.34) place(`crag${(r1 * 3) | 0}`, x, y);
-          else if (r3 < 0.46) place(`rock${(r2 * 2) | 0}`, x, y);
+          if (r3 < 0.34) place(`crag${(r1 * 3) | 0}`, x, y, lod);
+          else if (r3 < 0.46) place(`rock${(r2 * 2) | 0}`, x, y, lod);
           break;
         case T.HILL:
-          if (r3 < 0.1) place(`rock${(r2 * 2) | 0}`, x, y);
-          else if (r3 < 0.17) place(r1 < 0.4 ? `pine${(r2 * 2) | 0}` : `bush${(r1 * 3) | 0}`, x, y);
+          if (r3 < 0.1) place(`rock${(r2 * 2) | 0}`, x, y, lod);
+          else if (r3 < 0.17) place(r1 < 0.4 ? `pine${(r2 * 2) | 0}` : `bush${(r1 * 3) | 0}`, x, y, lod);
+          break;
+        case T.DESERT:
+          // Deliberately sparser than anywhere else on the map. Emptiness is
+          // the desert's whole characterisation — the moment you can see three
+          // things at once it stops reading as somewhere nobody wants to be.
+          // Bones are rare enough to be a find rather than a motif.
+          if (r3 < 0.055) place(`cactus${(r1 * 2) | 0}`, x, y, lod);
+          else if (r3 < 0.10) place(`deadbush${(r2 * 2) | 0}`, x, y, lod);
+          else if (r3 < 0.125) place(`rock${(r2 * 2) | 0}`, x, y, lod);
+          else if (r3 < 0.132) place('bones', x, y, lod);
           break;
         default:
-          if (r3 < 0.045) place(`tree${(r2 * 3) | 0}`, x, y);
-          else if (r3 < 0.09) place(`bush${(r1 * 3) | 0}`, x, y);
-          else if (r3 < 0.14) place(`flowers${(r2 * 2) | 0}`, x, y);
+          if (r3 < 0.045) place(`tree${(r2 * 3) | 0}`, x, y, lod);
+          else if (r3 < 0.09) place(`bush${(r1 * 3) | 0}`, x, y, lod);
+          else if (r3 < 0.14) place(`flowers${(r2 * 2) | 0}`, x, y, lod);
       }
     }
   }
@@ -117,15 +134,50 @@ export function buildScenery(terrain) {
 }
 
 /**
- * Clear anything standing where a building just went up.
+ * The patch of ground one building clears, in world units.
  * `propName` is a real prop, so the cleared area matches the sprite's width
  * rather than a guess.
  */
-export function clearAround(scenery, x, y, propName) {
+export function clearedBy(x, y, propName) {
   const meta = propName ? propMeta(propName) : null;
-  const rx = (meta ? meta.w : 26) * 0.6 + 6;
-  const ry = 18;
-  return scenery.filter((q) => Math.abs(q.x - x) > rx || Math.abs(q.y - y) > ry);
+  return { x, y, rx: (meta ? meta.w : 26) * 0.6 + 6, ry: 18 };
+}
+
+/**
+ * Remove everything standing where a building went up — all of them, in one
+ * pass over the scenery.
+ *
+ * The obvious implementation is a `filter` per building, and that is what this
+ * used to be. It is fine for one town of a dozen sheds and it is not fine for
+ * fourteen towns of twenty buildings on a map carrying thirteen thousand props:
+ * that is a quarter of a million comparisons every time anybody finishes a
+ * fence, and it ran on the same tick as the sparkle. Bucketing the cleared
+ * patches turns it into one pass with a handful of tests each.
+ */
+export function clearAll(scenery, boxes) {
+  if (!boxes.length) return scenery.slice();
+  const cell = 64;
+  const grid = new Map();
+  const key = (cx, cy) => `${cx},${cy}`;
+  for (const box of boxes) {
+    const x0 = Math.floor((box.x - box.rx) / cell), x1 = Math.floor((box.x + box.rx) / cell);
+    const y0 = Math.floor((box.y - box.ry) / cell), y1 = Math.floor((box.y + box.ry) / cell);
+    for (let cy = y0; cy <= y1; cy++) {
+      for (let cx = x0; cx <= x1; cx++) {
+        const k = key(cx, cy);
+        if (!grid.has(k)) grid.set(k, []);
+        grid.get(k).push(box);
+      }
+    }
+  }
+  return scenery.filter((q) => {
+    const near = grid.get(key(Math.floor(q.x / cell), Math.floor(q.y / cell)));
+    if (!near) return true;
+    for (const box of near) {
+      if (Math.abs(q.x - box.x) <= box.rx && Math.abs(q.y - box.y) <= box.ry) return false;
+    }
+    return true;
+  });
 }
 
 /** True once the road has worn through where this prop stands. */

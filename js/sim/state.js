@@ -12,8 +12,8 @@
 // 240x160 world from ~1 MB of terrain down to a few kilobytes.
 
 import { Rng } from './rng.js';
-import { generateTerrain, MAP, TILE, WORLD } from './terrain.js';
-import { decayWear, roadFrac, ROAD_MIN, WEAR_MAX, bestJunction } from './roads.js';
+import { generateTerrain, regionAt, REGION_COUNT, MAP, TILE, WORLD } from './terrain.js';
+import { decayWear, roadFrac, ROAD_MIN, WEAR_MAX, bestJunctions } from './roads.js';
 import { growTown, growPopulation, totalPopulation, TOWN_SPACING, housing, population } from './towns.js';
 import {
   findGates, spawnBorderCaravan, spawnTownCaravan, spawnTradeCaravan, borderInterval,
@@ -22,7 +22,7 @@ import {
 import { updateResidents, balanceResidents } from './residents.js';
 import { produce, emptyStock, landOf } from './economy.js';
 
-export const SAVE_VERSION = 4;
+export const SAVE_VERSION = 5;
 export { WORLD, MAP, TILE };
 
 /** How full a town has to be before its surplus starts leaving as caravans. */
@@ -49,10 +49,11 @@ export function createState(seed = (Math.random() * 1e9) | 0) {
     towns: [],
     caravans: [],
     residents: [],
-    // The best unclaimed crossroads on the map right now, or null. Derived from
-    // the wear field on a slow timer and cached here because every caravan that
-    // finishes a leg wants to know about it, and the scan is not cheap.
-    frontier: null,
+    // The best unclaimed crossroads in each region right now, or null for a
+    // region that hasn't got one. Derived from the wear field on a slow timer
+    // and cached here because every caravan that finishes a leg wants to know
+    // about it, and the scan is not cheap.
+    frontiers: new Array(REGION_COUNT).fill(null),
     nextId: 1,
     stats: {
       caravans: 0, souls: 0, settled: 0, trades: 0, paths: 0, distance: 0, roadTiles: 0,
@@ -107,7 +108,7 @@ export function step(state, dt) {
   tm.frontier -= dt;
   if (tm.frontier <= 0) {
     tm.frontier = 6;
-    state.frontier = bestJunction(state, 3, FOUND_WEAR, TOWN_SPACING);
+    state.frontiers = bestJunctions(state, 3, FOUND_WEAR, TOWN_SPACING, REGION_COUNT);
     state.stats.roadTiles = countRoads(state);
   }
 
@@ -311,8 +312,13 @@ export function restore(snap) {
   }));
   // Survey each town's country again rather than storing it: the land is a pure
   // function of the seed and where the town sits, so a save has no business
-  // carrying it.
-  for (const town of state.towns) landOf(state, town);
+  // carrying it. Which region a town stands in is on the same side of that
+  // line — it is stored on the town only so the trade code doesn't have to
+  // recompute it every second, not because it is state.
+  for (const town of state.towns) {
+    landOf(state, town);
+    town.region = regionAt(state.terrain, Math.floor(town.x / TILE), Math.floor(town.y / TILE));
+  }
   state.caravans = (snap.caravans || []).map((c) => ({
     ...c,
     path: null,     // recomputed on the caravan's next tick
