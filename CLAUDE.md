@@ -42,6 +42,7 @@ index.html          the game
 demo/               the archived art-style test (its own index.html + sprites.html)
 styles.css          shared panel styling
 docs/EMERGENCE.md   what each actor wants, and which loops that closes
+docs/PERFORMANCE.md what is actually slow, and how to profile it without guessing
 
 js/pixel.js         pixel-art rasteriser: grid, outline, rim light, colour maths
 js/palette.js       three palettes; STYLE holds the locked look + live zoom/speed
@@ -119,10 +120,17 @@ two of them will bite:
 `screenToWorld()` in game.js when handling pointer events.
 
 **Roads live on their own canvas.** The terrain bake is static; wear changes
-constantly. `roadPaint.js` keeps a full-size ImageData, repaints only tiles whose
-wear moved by more than `EPS`, and does one `putImageData` with a dirty rect per
-frame. Wear is sampled bilinearly, so touching one tile marks its neighbours
-dirty too.
+constantly. `roadPaint.js` keeps a full-size ImageData and repaints only the
+tiles that moved. It learns which ones two ways, and the split matters: the sim
+logs every tile `depositTrail` scuffs into `state.wearTouched` (transient and
+unserialised, exactly like `state.events`), while *decay* is deliberately not
+logged — it moves every tile at once, so a background sweep covers a
+thirty-second of the map per frame instead, and `EPS` now gates only that.
+Painted tiles are uploaded as short runs along a tile row rather than as one
+rectangle around all of them; the bounding box of twenty caravans is most of the
+map. Wear is sampled bilinearly, so a *deposit* marks its neighbours dirty too —
+a sweep hit does not, because its neighbours faded by the same amount and are
+about to be swept anyway. See `docs/PERFORMANCE.md`.
 
 ## Tuning knobs
 
@@ -164,7 +172,18 @@ python3 -m http.server 8000     # ES modules need HTTP, not file://
 There is no test suite. Verification is done by driving the real page with
 Playwright — Chromium is preinstalled in the cloud environment at
 `/opt/pw-browsers/chromium-*/chrome-linux/chrome`, so launch with an explicit
-`executablePath`. The checks worth re-running after a sim change:
+`executablePath`.
+
+**Never test at 1x, and never test on a fresh map.** Everything interesting
+about this game — traffic, worn roads, towns with two hundred buildings between
+them, and every performance problem it has ever had — only exists a good way
+into a session. Run at **4x or 16x**, and get to the late game first: either
+fast-forward headlessly (`import('/js/sim/state.js')` from the page resolves to
+the module the game is already running, so you can `step()` the live state
+without drawing), or keep a matured `snapshot()` in `localStorage` and reload
+into it. `docs/PERFORMANCE.md` has both recipes.
+
+The checks worth re-running after a sim change:
 
 - **No console errors** and 60fps at whole-map zoom, after a few minutes at 16×.
 - **Terrain proportions** across half a dozen seeds — import
