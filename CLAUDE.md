@@ -6,8 +6,24 @@ rediscover.
 
 ## Working preferences
 
-- **Commit straight to `main`.** No feature branches, no PRs for this repo.
+- **Work lands on `main`, always.** No feature branches, no PRs for this repo.
   Commit as you go with descriptive messages and push.
+
+  This holds even when a session's own instructions assign you a working
+  branch — an agent harness will often hand you something like
+  `claude/some-slug` and tell you to develop there. Do both rather than
+  picking one: commit on the assigned branch, push it, then fast-forward
+  `main` onto the same commit and push `main` too. The harness gets the
+  branch it asked for, the repo gets its history on `main`, and nothing is
+  left stranded on a branch nobody will look at again.
+
+  ```sh
+  git push -u origin <assigned-branch>
+  git push origin HEAD:main            # fails loudly if it isn't a fast-forward
+  ```
+
+  If that push is rejected, `main` has moved: rebase onto it and push both
+  again. Never resolve it by leaving the work on the branch.
 - **No build step, no dependencies, no backend.** Plain ES modules served as
   static files. Keep it that way; GitHub Pages serves the repo verbatim.
 - Keep the prose in comments and docs explaining *why*, not *what*. The existing
