@@ -17,7 +17,7 @@
 import { STYLE, pal } from '../palette.js';
 import { villagerFrame } from '../sprites.js';
 import { prop, propMeta, propLights, clearPropCache } from '../props.js';
-import { clearSpriteCache, roleLook } from '../sprites.js';
+import { clearSpriteCache, roleLook, dropLooks } from '../sprites.js';
 import { updateFx, drawFx, smoke, popIcon, sparkle, clearFx } from '../fx.js';
 import { WORLD } from '../sim/terrain.js';
 import { toScreen, viewBounds } from './camera.js';
@@ -52,6 +52,36 @@ function buildingProps(b) {
 const depthOf = (q) => (q.sortY != null ? q.sortY : q.y);
 const SHADOWED = /tree|pine|crag|house|inn|bakery|stall|well|cart|haystack|market|warehouse|lumber|smithy|wagon/;
 
+/**
+ * First index of a depth-sorted list whose key is not below `value`.
+ *
+ * Both lists this is used on — the static world and the lamps — cover the whole
+ * map and only ever get longer, while the slice of them on screen stays about
+ * the same size. Walking all of either to reject 99% of it was costing more
+ * than drawing the survivors: a late-game map holds 3,300 statics and shows
+ * fifteen of them.
+ */
+function lowerBound(list, key, value) {
+  let lo = 0, hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (key(list[mid]) < value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * Slack on the depth window, in world units.
+ *
+ * Depth is not quite the same number as position — a stall's two halves are
+ * keyed 14 units either side of where they stand — and a sprite is drawn from
+ * its feet, so a tall one whose base is below the window still has pixels
+ * inside it. Cheaper to include a little too much and let the per-item bounds
+ * check throw it out.
+ */
+const DEPTH_SLACK = 80;
+
 // ------------------------------------------------------------ the renderer
 
 export function createRenderer(state) {
@@ -68,6 +98,8 @@ export function createRenderer(state) {
     trails: new Map(),
     smokeT: 0,
     follow: null,
+    // Ticks once per drawn frame. Only used to date the look cache.
+    frameNo: 0,
   };
 
   /** Rebuild everything that depends on the baked pixel scale or the palette. */
@@ -127,6 +159,10 @@ export function createRenderer(state) {
         }
       }
     }
+    // Sorted so the night pass can take the on-screen slice by binary search
+    // rather than walking every lamp on the map. This list grows with every
+    // building ever put up, so that difference widens for the whole session.
+    lights.sort((a, b) => a.y - b.y);
     r.lights = lights;
   };
 
@@ -160,23 +196,33 @@ export function createRenderer(state) {
 
   // Every distinct (role, seed) pair bakes its own set of walk frames, and both
   // caravans and residents churn — a long session gets through hundreds of them,
-  // none of which the caches would ever have dropped. Flushing wholesale when
-  // the population of *looks* gets large is blunt, but it is one hitch every few
-  // thousand people rather than a canvas cache that grows until the tab dies.
+  // none of which the caches would ever have dropped. So the cache is capped;
+  // what matters is *how* it is trimmed. Emptying it wholesale meant every
+  // villager and wagon on screen re-baked in the same frame, which was a visible
+  // stall every few hundred people. Retiring the looks that have gone longest
+  // without being drawn costs the same memory and nothing in frame time: the
+  // ones still walking about keep their frames.
   const LOOK_BUDGET = 220;
+  const LOOK_EVICT = 64;
 
   r.lookFor = (t) => {
     const key = `${t.role}:${t.seed}`;
     let look = r.looks.get(key);
-    if (!look) {
-      if (r.looks.size >= LOOK_BUDGET) {
-        r.looks.clear();
-        clearSpriteCache();
-      }
-      look = roleLook(t.role, t.seed);
-      look.key = key;
-      r.looks.set(key, look);
+    if (look) { look.seen = r.frameNo; return look; }
+
+    if (r.looks.size >= LOOK_BUDGET) {
+      const stale = [...r.looks.values()]
+        .sort((a, b) => a.seen - b.seen)
+        .slice(0, LOOK_EVICT);
+      for (const q of stale) r.looks.delete(q.key);
+      dropLooks(stale);
     }
+    look = roleLook(t.role, t.seed);
+    look.key = key;
+    look.seen = r.frameNo;
+    // Filled in by `villagerFrame`, and the reason eviction can be surgical.
+    look.sprites = [];
+    r.looks.set(key, look);
     return look;
   };
 
@@ -468,6 +514,40 @@ export function daylight() {
   return Math.min(up, down);
 }
 
+/**
+ * One lamp's glow, baked.
+ *
+ * Building a radial gradient is not cheap, and the old night pass built one per
+ * lamp per frame — so the cost of a lit town grew with every window ever added
+ * to it, and a mature map spent longer making gradients than drawing the world.
+ * The falloff is the same for every lamp, so it is baked once per size and
+ * blitted. Intensity rides on `globalAlpha` instead of the colour stops, which
+ * is what lets a single bake serve every darkness the clock passes through.
+ */
+const glowCache = new Map();
+
+function glowSprite(rad) {
+  const size = Math.max(4, Math.round(rad) * 2);
+  const hit = glowCache.get(size);
+  if (hit) return hit;
+  const cv = document.createElement('canvas');
+  cv.width = size;
+  cv.height = size;
+  const c = cv.getContext('2d');
+  const h = size / 2;
+  const grad = c.createRadialGradient(h, h, 0, h, h, h);
+  grad.addColorStop(0, 'rgba(255,215,140,1)');
+  grad.addColorStop(0.45, 'rgba(240,180,90,0.4)');
+  grad.addColorStop(1, 'rgba(240,180,90,0)');
+  c.fillStyle = grad;
+  c.fillRect(0, 0, size, size);
+  // Bounded by the handful of radii the zoom brackets can produce, but a
+  // palette or scale change can strand the old ones, so don't let it creep.
+  if (glowCache.size > 24) glowCache.clear();
+  glowCache.set(size, cv);
+  return cv;
+}
+
 function drawNight(g, r, cam) {
   const p = pal();
   const dark = (1 - daylight()) * p.nightStrength;
@@ -482,19 +562,23 @@ function drawNight(g, r, cam) {
   // `lighter` on top of the wash reads like lamplight rather than a hole cut
   // in the darkness.
   g.globalCompositeOperation = 'lighter';
+  g.globalAlpha = 0.5 * dark;
   const s = STYLE.scale;
-  for (const L of r.lights) {
-    const [sx, sy] = toScreen(cam, L.x, L.y);
+  const b = viewBounds(cam, 60);
+  const lights = r.lights;
+  // Lamps are sorted by y, so only the band crossing the screen can matter.
+  for (let i = lowerBound(lights, (L) => L.y, b.y0 - 60); i < lights.length; i++) {
+    const L = lights[i];
+    if (L.y > b.y1 + 60) break;
+    if (L.x < b.x0 - 60 || L.x > b.x1 + 60) continue;
     const rad = L.r * s * 0.55;
+    const sx = (L.x - cam.x) * s + v.w / 2;
+    const sy = (L.y - cam.y) * s + v.h / 2;
     if (sx < -rad || sy < -rad || sx > v.w + rad || sy > v.h + rad) continue;
-    const grad = g.createRadialGradient(sx, sy, 0, sx, sy, rad);
-    const a = 0.5 * dark;
-    grad.addColorStop(0, `rgba(255,215,140,${a})`);
-    grad.addColorStop(0.45, `rgba(240,180,90,${a * 0.4})`);
-    grad.addColorStop(1, 'rgba(240,180,90,0)');
-    g.fillStyle = grad;
-    g.fillRect(sx - rad, sy - rad, rad * 2, rad * 2);
+    const spr = glowSprite(rad);
+    g.drawImage(spr, sx - rad, sy - rad, rad * 2, rad * 2);
   }
+  g.globalAlpha = 1;
   g.globalCompositeOperation = 'source-over';
 }
 
@@ -595,6 +679,7 @@ export function drawScene(g, r, cam, state) {
   const p = pal();
   const v = cam.view;
   const s = STYLE.scale;
+  r.frameNo++;
 
   g.fillStyle = p.night;
   g.fillRect(0, 0, v.w, v.h);
@@ -624,10 +709,14 @@ export function drawScene(g, r, cam, state) {
   for (const p of state.residents) if (inView(p)) dyn.push(p);
   dyn.sort((a, c) => a.y - c.y);
 
-  let i = 0, j = 0;
-  while (i < r.statics.length || j < dyn.length) {
+  // The static world spans the whole map; only the depth band crossing the
+  // screen can be visible, and it is already sorted by depth.
+  let i = lowerBound(r.statics, depthOf, b.y0 - DEPTH_SLACK);
+  const end = lowerBound(r.statics, depthOf, b.y1 + 60 + DEPTH_SLACK);
+  let j = 0;
+  while (i < end || j < dyn.length) {
     const takeStatic = j >= dyn.length
-      || (i < r.statics.length && depthOf(r.statics[i]) <= dyn[j].y);
+      || (i < end && depthOf(r.statics[i]) <= dyn[j].y);
     if (takeStatic) {
       const q = r.statics[i++];
       if (q.x < b.x0 || q.x > b.x1 || q.y < b.y0 || q.y > b.y1 + 60) continue;

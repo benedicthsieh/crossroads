@@ -13,7 +13,7 @@
 
 import { Rng } from './rng.js';
 import { generateTerrain, MAP, TILE, WORLD } from './terrain.js';
-import { decayWear, roadFrac, ROAD_MIN, WEAR_MAX, bestJunction } from './roads.js';
+import { decayWear, roadFrac, ROAD_MIN, WEAR_MAX, bestJunction, createTouchLog } from './roads.js';
 import { growTown, growPopulation, totalPopulation, TOWN_SPACING, housing, population } from './towns.js';
 import {
   findGates, spawnBorderCaravan, spawnTownCaravan, spawnTradeCaravan, borderInterval,
@@ -44,6 +44,10 @@ export function createState(seed = (Math.random() * 1e9) | 0) {
     rng: new Rng(s ^ 0x5f3759df),
     terrain,
     wear: new Float32Array(MAP.w * MAP.h),
+    // Which tiles of `wear` were scuffed since the renderer last looked.
+    // Transient, like `events`: never serialised, and a restored game simply
+    // repaints the whole road layer once instead.
+    wearTouched: createTouchLog(),
     gates: findGates(terrain),
     towns: [],
     caravans: [],

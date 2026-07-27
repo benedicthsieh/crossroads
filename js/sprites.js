@@ -464,6 +464,9 @@ export function villagerFrame(look, view, frame, item, tool) {
   let hit = cache.get(key);
   if (hit) return hit;
 
+  // Remember which frames belong to this look, so retiring one traveller's
+  // appearance doesn't mean throwing away everybody's. See `dropLooks`.
+  if (look.sprites) look.sprites.push(key);
   const flip = view === 'left';
   const drawn = drawVillager(look, flip ? 'side' : view, frame, { item, tool });
   const px = flip ? drawn.flipped() : drawn;
@@ -617,4 +620,22 @@ export function dogFrame(frame, flip) {
 
 export function clearSpriteCache() {
   cache.clear();
+}
+
+/**
+ * Forget the baked frames belonging to a few retired looks.
+ *
+ * Every distinct (role, seed) pair bakes its own walk cycle, and travellers
+ * churn, so without eviction the cache grows until the tab dies. It used to be
+ * emptied wholesale when it got large, which meant every villager and wagon on
+ * screen re-baked in the same frame — a stall you could see, arriving every few
+ * hundred people. Dropping only the looks nobody is wearing any more costs
+ * nothing anybody notices.
+ */
+export function dropLooks(looks) {
+  for (const look of looks) {
+    if (!look.sprites) continue;
+    for (const key of look.sprites) cache.delete(key);
+    look.sprites.length = 0;
+  }
 }

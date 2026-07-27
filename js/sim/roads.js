@@ -42,6 +42,39 @@ export function moveCost(terrain, wear, i) {
   return terrainCost(terrain, i) * (1 - f) + ROAD_COST * f;
 }
 
+// ------------------------------------------------------------ the touch log
+//
+// Wear is the one field the renderer has to chase every frame, and it used to
+// find the changes by comparing all 117,600 tiles against what it had already
+// painted. That scan cost more than the sim step it was chasing. Instead the
+// sim writes down which tiles it scuffed, in the same spirit as `state.events`:
+// a transient change-log the renderer drains and nothing serialises.
+//
+// Only *deposits* are logged. Decay touches every tile at once, and logging
+// that would be the full-map scan again by another name — the renderer sweeps
+// for it slowly instead, which is all a 900-second half-life needs.
+
+/** Tiles the log can hold before it gives up and asks for a full repaint. */
+const TOUCH_CAP = 8192;
+
+export function createTouchLog() {
+  return { idx: new Int32Array(TOUCH_CAP), flags: new Uint8Array(MAP.w * MAP.h), n: 0, overflow: false };
+}
+
+function touch(log, i) {
+  if (!log || log.flags[i]) return;
+  if (log.n >= TOUCH_CAP) { log.overflow = true; return; }
+  log.flags[i] = 1;
+  log.idx[log.n++] = i;
+}
+
+/** Called by the renderer once it has repainted everything the log listed. */
+export function clearTouchLog(log) {
+  for (let k = 0; k < log.n; k++) log.flags[log.idx[k]] = 0;
+  log.n = 0;
+  log.overflow = false;
+}
+
 /**
  * Scuff the ground under a traveller.
  *
@@ -54,13 +87,15 @@ export function depositTrail(state, wx, wy, amount) {
   const { wear } = state;
   const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
   if (tx < 0 || ty < 0 || tx >= MAP.w || ty >= MAP.h) return;
+  const log = state.wearTouched;
   const i = ty * MAP.w + tx;
   wear[i] = Math.min(WEAR_MAX, wear[i] + amount);
+  touch(log, i);
   const spill = amount * 0.34;
-  if (tx > 0) wear[i - 1] = Math.min(WEAR_MAX, wear[i - 1] + spill);
-  if (tx < MAP.w - 1) wear[i + 1] = Math.min(WEAR_MAX, wear[i + 1] + spill);
-  if (ty > 0) wear[i - MAP.w] = Math.min(WEAR_MAX, wear[i - MAP.w] + spill);
-  if (ty < MAP.h - 1) wear[i + MAP.w] = Math.min(WEAR_MAX, wear[i + MAP.w] + spill);
+  if (tx > 0) { wear[i - 1] = Math.min(WEAR_MAX, wear[i - 1] + spill); touch(log, i - 1); }
+  if (tx < MAP.w - 1) { wear[i + 1] = Math.min(WEAR_MAX, wear[i + 1] + spill); touch(log, i + 1); }
+  if (ty > 0) { wear[i - MAP.w] = Math.min(WEAR_MAX, wear[i - MAP.w] + spill); touch(log, i - MAP.w); }
+  if (ty < MAP.h - 1) { wear[i + MAP.w] = Math.min(WEAR_MAX, wear[i + MAP.w] + spill); touch(log, i + MAP.w); }
 }
 
 /** Global fade. Cheap enough to run over the whole map; it's one pass of 38k. */

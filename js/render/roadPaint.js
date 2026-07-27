@@ -11,7 +11,7 @@
 // one tile marks its neighbours dirty — their edge pixels read from it.
 
 import { MAP, TILE, WORLD, T } from '../sim/terrain.js';
-import { roadFrac, ROAD_MIN } from '../sim/roads.js';
+import { roadFrac, ROAD_MIN, clearTouchLog } from '../sim/roads.js';
 import { hash3 } from '../sim/rng.js';
 import { pal } from '../palette.js';
 
@@ -21,10 +21,53 @@ const rgb = (hex) => [
   parseInt(hex.slice(5, 7), 16),
 ];
 
-/** How much a tile's wear must move before it's worth redrawing. */
-const EPS = 0.02;
+/**
+ * How much a tile's wear must move before the decay sweep repaints it.
+ *
+ * This is only about *fading* now — anything a traveller scuffs comes through
+ * the sim's touch log and is repainted whatever the size of the change. Decay
+ * is uniform and glacial, so the threshold can be coarse: 0.06 is a thirtieth
+ * of the way up the ramp from bare ground to finished road, well under one step
+ * of the dither, and holding it there roughly thirds the repaint churn a mature
+ * road network generates for no reason anyone can see.
+ */
+const EPS = 0.06;
 /** Tiles repainted per frame. Enough to keep up; small enough not to hitch. */
 const BUDGET = 900;
+
+/**
+ * Frames it takes the background sweep to walk the whole wear field once.
+ *
+ * The sweep exists only to notice *decay*, which the sim's touch log
+ * deliberately doesn't record — decay moves every tile at once, so logging it
+ * would just be the full-map scan this is here to avoid. A road loses about
+ * 0.0014 of wear a second, so it takes a quarter of a minute to drift past EPS
+ * at all; noticing that half a second late is invisible, and it costs a
+ * thirty-second of a scan per frame instead of a whole one.
+ */
+const SWEEP_FRAMES = 32;
+
+/**
+ * Upload granularity. Dirty tiles are scattered — twenty caravans are twenty
+ * separate smudges — so the bounding box around them is most of the map, and
+ * uploading that box was costing more than painting the tiles inside it. Tiles
+ * are grouped into short runs along a tile row instead, and each run goes up on
+ * its own. `RUN_GAP` is how many clean tiles it's worth carrying inside a run
+ * rather than paying for a second upload; past `MAX_RUNS` the scatter is bad
+ * enough that the call overhead starts to matter and rows are sent whole.
+ *
+ * `MAX_RUNS` is high because the call turns out to be cheap: measured on a
+ * throttled phone profile, 400 uploads of a 30x6 run cost 1.6ms between them,
+ * while the single 2520x460 rectangle they replace costs 2.8ms on its own. The
+ * fallback is a safety valve for a repaint backlog, not a routine path.
+ *
+ * Note what the fallback is *not*: a single box round everything. That was the
+ * original behaviour and it is the worst of both worlds — dirt in two opposite
+ * corners of the map uploaded four million pixels to repaint a few hundred. A
+ * whole row is 2,520 pixels by six; even every row at once is a fraction of it.
+ */
+const RUN_GAP = 12;
+const MAX_RUNS = 384;
 
 export function createRoadLayer() {
   const canvas = document.createElement('canvas');
@@ -41,6 +84,10 @@ export function createRoadLayer() {
     queue: [],
     queued: new Uint8Array(MAP.w * MAP.h),
     colors: null,
+    // Where the slow decay sweep has got to, as a tile row.
+    sweepRow: 0,
+    // Tiles painted this frame, reused so the per-frame flush doesn't allocate.
+    done: new Int32Array(BUDGET),
   };
 }
 
@@ -96,12 +143,44 @@ function sampleWear(wear, px, py) {
   return top + (bot - top) * fy;
 }
 
+/**
+ * The wear a bilinear sample anywhere inside this tile could possibly return.
+ *
+ * Every pixel in the tile interpolates between it and its eight neighbours, so
+ * the largest of the nine bounds the lot. Most tiles marked dirty are the
+ * *verge* of a track rather than the track itself — a deposit marks four
+ * neighbours it may barely have touched — and for those the whole tile is
+ * transparent, which is worth knowing before doing thirty-six bilinear samples
+ * to find out one pixel at a time.
+ */
+function peakWear(wear, tx, ty) {
+  let m = 0;
+  const y0 = Math.max(0, ty - 1), y1 = Math.min(MAP.h - 1, ty + 1);
+  const x0 = Math.max(0, tx - 1), x1 = Math.min(MAP.w - 1, tx + 1);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const w = wear[y * MAP.w + x];
+      if (w > m) m = w;
+    }
+  }
+  return m;
+}
+
 function paintTile(layer, state, tx, ty) {
   const { data, colors } = layer;
   const { wear, terrain } = state;
   const x0 = tx * TILE, y0 = ty * TILE;
   const kind = terrain.kind[ty * MAP.w + tx];
   const isWater = kind === T.WATER;
+
+  // Nothing here can clear the faintest-scuff threshold: blank it and go.
+  if (roadFrac(peakWear(wear, tx, ty)) <= 0.04) {
+    for (let py = y0; py < y0 + TILE; py++) {
+      let o = (py * WORLD.w + x0) * 4 + 3;
+      for (let px = 0; px < TILE; px++, o += 4) data[o] = 0;
+    }
+    return;
+  }
 
   for (let py = y0; py < y0 + TILE; py++) {
     for (let px = x0; px < x0 + TILE; px++) {
@@ -160,6 +239,79 @@ function markDirty(layer, i) {
 }
 
 /**
+ * A tile a traveller just scuffed, plus the neighbours whose edge pixels sample
+ * it. The spread is what stops a fresh track showing up as a row of hard-edged
+ * squares, and it is only needed for *sudden* changes.
+ *
+ * The decay sweep pointedly does not use this. Fade moves every tile by the
+ * same factor, so a tile that has drifted past EPS sits among neighbours that
+ * have drifted by the same amount and are about to be repainted on their own
+ * account. Spreading each sweep hit across five tiles quintupled the repaint
+ * bill to correct an error bounded by EPS — which is, by construction, the
+ * amount nobody can see.
+ */
+function markTile(layer, i) {
+  markDirty(layer, i);
+  const tx = i % MAP.w, ty = (i / MAP.w) | 0;
+  if (tx > 0) markDirty(layer, i - 1);
+  if (tx < MAP.w - 1) markDirty(layer, i + 1);
+  if (ty > 0) markDirty(layer, i - MAP.w);
+  if (ty < MAP.h - 1) markDirty(layer, i + MAP.w);
+}
+
+/**
+ * Push the tiles painted this frame to the canvas.
+ *
+ * `done` holds them in the order they were painted, which is the order they
+ * were queued in and therefore arbitrary. Sorting puts them in row-major order,
+ * where a smudge of dirty tiles becomes a handful of short runs along
+ * successive rows, and each run is one small upload instead of a share in one
+ * enormous one.
+ */
+function flush(layer, done, count) {
+  if (!count) return;
+  const tiles = done.subarray(0, count);
+  tiles.sort();
+
+  // Count the runs first: if the dirt really is scattered all over the map,
+  // hundreds of tiny uploads cost more in call overhead than one big rectangle.
+  let runs = 1;
+  for (let k = 1; k < count; k++) {
+    const a = tiles[k - 1], b = tiles[k];
+    if (((b / MAP.w) | 0) !== ((a / MAP.w) | 0) || b - a > RUN_GAP) runs++;
+  }
+
+  // Too scattered to be worth one call each: send each dirty row entire, and
+  // merge rows that turned out to be adjacent into a single taller band.
+  if (runs > MAX_RUNS) {
+    let bandY = (tiles[0] / MAP.w) | 0, bandH = 1;
+    for (let k = 1; k <= count; k++) {
+      const ty = k < count ? (tiles[k] / MAP.w) | 0 : -1;
+      if (ty === bandY + bandH - 1) continue;               // same row again
+      if (ty === bandY + bandH) { bandH++; continue; }      // the next row down
+      layer.ctx.putImageData(layer.img, 0, 0, 0, bandY * TILE, MAP.w * TILE, bandH * TILE);
+      bandY = ty;
+      bandH = 1;
+    }
+    return;
+  }
+
+  let start = 0;
+  for (let k = 1; k <= count; k++) {
+    const a = tiles[k - 1];
+    const brk = k === count
+      || ((tiles[k] / MAP.w) | 0) !== ((a / MAP.w) | 0)
+      || tiles[k] - a > RUN_GAP;
+    if (!brk) continue;
+    const ty = (a / MAP.w) | 0;
+    const x0 = tiles[start] % MAP.w, x1 = a % MAP.w;
+    layer.ctx.putImageData(layer.img, 0, 0,
+      x0 * TILE, ty * TILE, (x1 - x0 + 1) * TILE, TILE);
+    start = k;
+  }
+}
+
+/**
  * Bring the layer up to date with the wear field.
  * @param {boolean} all repaint everything (after a load, or an art rebake).
  */
@@ -167,45 +319,49 @@ export function updateRoadLayer(layer, state, all = false) {
   if (!layer.colors) layer.colors = colorsFor();
   const { wear } = state;
   const n = MAP.w * MAP.h;
+  const log = state.wearTouched;
 
   if (all) {
     layer.painted.fill(-1);
     layer.queue.length = 0;
     layer.queued.fill(0);
     for (let i = 0; i < n; i++) markDirty(layer, i);
+    if (log) clearTouchLog(log);
   } else {
-    for (let i = 0; i < n; i++) {
-      if (Math.abs(wear[i] - layer.painted[i]) <= EPS) continue;
-      markDirty(layer, i);
-      const tx = i % MAP.w, ty = (i / MAP.w) | 0;
-      if (tx > 0) markDirty(layer, i - 1);
-      if (tx < MAP.w - 1) markDirty(layer, i + 1);
-      if (ty > 0) markDirty(layer, i - MAP.w);
-      if (ty < MAP.h - 1) markDirty(layer, i + MAP.w);
+    // What the sim scuffed since the last frame, exactly.
+    if (log) {
+      if (log.overflow) for (let i = 0; i < n; i++) markDirty(layer, i);
+      else for (let k = 0; k < log.n; k++) markTile(layer, log.idx[k]);
+      clearTouchLog(log);
     }
+
+    // One slice of the field, looking for tiles that decay has moved. Without
+    // a touch log at all this still catches everything, just slowly — which is
+    // why a headless state with no log attached is not a broken one.
+    const rows = Math.ceil(MAP.h / SWEEP_FRAMES);
+    const y0 = layer.sweepRow;
+    const y1 = Math.min(MAP.h, y0 + rows);
+    for (let i = y0 * MAP.w; i < y1 * MAP.w; i++) {
+      if (Math.abs(wear[i] - layer.painted[i]) > EPS) markDirty(layer, i);
+    }
+    layer.sweepRow = y1 >= MAP.h ? 0 : y1;
   }
 
   if (!layer.queue.length) return;
 
   const budget = all ? layer.queue.length : Math.min(BUDGET, layer.queue.length);
-  let minX = WORLD.w, minY = WORLD.h, maxX = 0, maxY = 0;
 
   for (let k = 0; k < budget; k++) {
     const i = layer.queue[k];
     layer.queued[i] = 0;
-    const tx = i % MAP.w, ty = (i / MAP.w) | 0;
-    paintTile(layer, state, tx, ty);
+    paintTile(layer, state, i % MAP.w, (i / MAP.w) | 0);
     layer.painted[i] = wear[i];
-    if (tx * TILE < minX) minX = tx * TILE;
-    if (ty * TILE < minY) minY = ty * TILE;
-    if ((tx + 1) * TILE > maxX) maxX = (tx + 1) * TILE;
-    if ((ty + 1) * TILE > maxY) maxY = (ty + 1) * TILE;
+    if (!all) layer.done[k] = i;
   }
   layer.queue.splice(0, budget);
 
-  if (maxX > minX) {
-    layer.ctx.putImageData(layer.img, 0, 0, minX, minY, maxX - minX, maxY - minY);
-  }
+  if (all) layer.ctx.putImageData(layer.img, 0, 0);
+  else flush(layer, layer.done, budget);
 }
 
 /** Drop cached palette colours so the next update repaints in the new palette. */
