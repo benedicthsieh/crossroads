@@ -20,6 +20,11 @@ import {
 import {
   createRenderer, drawScene, tickSmoke, tickCaravans, updateFx, updateRoadLayer,
 } from './render/scene.js';
+import {
+  CREEDS, PLAYER, RIVAL, PERKS, faithOf, shares, beginFaith, claimOmen, buyPerk, canBuy, has,
+  sendProphet, prophetCost, endPrologue, canBeginEarly, WIN_SHARE,
+} from './sim/faith.js';
+import { drawFaithOverlay, floatText, tickFloaters, clearFloaters } from './render/faithPaint.js';
 
 const canvas = document.getElementById('view');
 const g = canvas.getContext('2d', { alpha: false });
@@ -33,22 +38,59 @@ let fps = 0;
 let zoomStop = DEFAULT_STOP;
 let autosaveT = 30;
 
+/**
+ * Wall-clock milliseconds per frame the prologue may spend stepping the sim.
+ * The prologue is the world building itself before there is anything to
+ * convert. It is worth seeing — it is the reason the map looks the way it
+ * does — but not at 1x, so it runs as fast as the frame budget allows and
+ * leaves the rest of the frame for drawing it.
+ */
+const PROLOGUE_BUDGET = 26;
+
+/**
+ * Renderer-side game UI state. None of this is saved: which town the card is
+ * showing, where the camera is gliding to, and which towns the HUD last saw
+ * change hands (so it can announce it).
+ */
+const ui = {
+  hits: [],
+  selected: null,
+  glide: null,
+  keeps: new Map(),
+  omenCursor: 0,
+  phase: null,
+};
+
 // --------------------------------------------------------------- lifecycle
 
 function adoptState(next) {
   state = next;
   if (!renderer) renderer = createRenderer(state);
+  // A world still building itself is watched whole; a game in progress opens
+  // on the town the creed started in. The zoom is set before the bake, not
+  // after, so a new map is baked once at the scale it will be seen at.
+  const fs = state.faith;
+  const origin = state.towns.find((t) => t.id === fs.origin);
+  const watching = fs.phase === 'prologue' || fs.phase === 'choose' || !origin;
+  STYLE.zoom = ZOOM_STOPS[watching ? 0 : 1].zoom;
+  STYLE.scale = bakeScaleFor(STYLE.zoom);
+  applyTransform(cam, canvas, g, dpr);
+  syncZoomUi();
   // Always rebake: a loaded game may have a different seed, and the terrain
   // canvas belongs to the seed it was painted from.
   renderer.rebakeArt(state);
   renderer.rebuildWorld(state);
-  // Open on the middle of the map; there is nothing else to look at yet.
-  const focus = state.towns[0] || { x: WORLD.w / 2, y: WORLD.h / 2 };
-  cam.x = focus.x;
-  cam.y = focus.y;
+  clearFloaters();
+  ui.selected = null;
+  ui.glide = null;
+  ui.keeps = new Map();
+  ui.phase = null;
+  cam.x = watching ? WORLD.w / 2 : origin.x;
+  cam.y = watching ? WORLD.h / 2 : origin.y;
   clampCamera(cam);
   refreshHud();
   refreshTowns();
+  syncPhase();
 }
 
 /**
@@ -119,15 +161,26 @@ function frame(now) {
     refreshHud();
   }
 
-  if (!paused) {
-    const dt = raw * STYLE.speed;
-    // Long steps at high speed are split so travellers can't tunnel through a
-    // tile without laying any wear down in it.
-    const slices = Math.min(8, Math.ceil(dt / 0.05));
-    for (let i = 0; i < slices; i++) step(state, dt / slices);
+  const phase = state.faith.phase;
+  // The clock holds while the player is choosing where to begin: it is the one
+  // decision in the game that should not be made against a timer.
+  if (!paused && phase !== 'choose') {
+    if (phase === 'prologue') {
+      const t0 = performance.now();
+      do step(state, 0.05);
+      while (performance.now() - t0 < PROLOGUE_BUDGET && state.faith.phase === 'prologue');
+    } else {
+      const dt = raw * STYLE.speed;
+      // Long steps at high speed are split so travellers can't tunnel through a
+      // tile without laying any wear down in it.
+      const slices = Math.min(16, Math.ceil(dt / 0.05));
+      for (let i = 0; i < slices; i++) step(state, dt / slices);
+    }
     updateFx(raw);
+    tickFloaters(raw);
     tickCaravans(renderer, state, raw);
     tickSmoke(renderer, state, raw);
+    handleEvents(state.events);
     renderer.consumeEvents(state);
     // The clock runs on wall time, not sim time. Tie it to `dt` and the whole
     // map strobes between noon and midnight at 16x, which is unusable.
@@ -141,6 +194,16 @@ function frame(now) {
   }
 
   updateRoadLayer(renderer.roads, state);
+
+  if (state.faith.phase !== ui.phase) syncPhase();
+
+  if (ui.glide) {
+    const k = Math.min(1, raw * 5);
+    cam.x += (ui.glide.x - cam.x) * k;
+    cam.y += (ui.glide.y - cam.y) * k;
+    clampCamera(cam);
+    if (Math.hypot(ui.glide.x - cam.x, ui.glide.y - cam.y) < 2) ui.glide = null;
+  }
 
   if (cam.follow != null) {
     const t = state.caravans.find((x) => x.id === cam.follow)
@@ -156,6 +219,7 @@ function frame(now) {
   }
 
   drawScene(g, renderer, cam, state);
+  drawFaithOverlay(g, cam, state, ui, dpr, now / 1000);
   requestAnimationFrame(frame);
 }
 
@@ -217,6 +281,7 @@ canvas.addEventListener('pointermove', (e) => {
   if (cam.moved > 4) {
     cam.follow = null;
     renderer.follow = null;
+    ui.glide = null;
     cam.x -= dx / STYLE.zoom;
     cam.y -= dy / STYLE.zoom;
     clampCamera(cam);
@@ -248,8 +313,28 @@ canvas.addEventListener('pointerup', (e) => {
 
 canvas.addEventListener('pointercancel', endPointer);
 
-/** Follow whatever is under this point: a caravan, or somebody on foot. */
+/**
+ * A tap. The game layer gets first refusal — omens, then towns — and only a
+ * tap on nothing in particular falls through to following a caravan.
+ */
 function pickAt(cssX, cssY) {
+  for (let i = ui.hits.length - 1; i >= 0; i--) {
+    const h = ui.hits[i];
+    if (cssX < h.x0 || cssX > h.x1 || cssY < h.y0 || cssY > h.y1) continue;
+    if (h.type === 'omen') { claimOmen(state, h.id, PLAYER); return; }
+    if (h.type === 'omenEdge') {
+      const o = state.faith.omens.find((q) => q.id === h.id);
+      if (o) glideTo(o.x, o.y);
+      return;
+    }
+    if (h.type === 'town') { selectTown(h.id); return; }
+  }
+  if (ui.selected != null) { selectTown(null); return; }
+  followAt(cssX, cssY);
+}
+
+/** Follow whatever is under this point: a caravan, or somebody on foot. */
+function followAt(cssX, cssY) {
   const [wx, wy] = screenToWorld(cssX, cssY);
   let best = null, bestD = 26;
   for (const c of state.caravans) {
@@ -281,12 +366,19 @@ canvas.addEventListener('wheel', (e) => {
 
 window.addEventListener('keydown', (e) => {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+  if (e.key === 'Tab' || e.key === 'o') { nextOmen(); e.preventDefault(); return; }
+  if (e.key === 'r') { togglePerks(); e.preventDefault(); return; }
+  if (e.key === 'Escape') {
+    document.getElementById('perks').hidden = true;
+    selectTown(null);
+  }
   const pan = 90 / STYLE.zoom;
   if (e.key === 'ArrowLeft' || e.key === 'a') cam.x -= pan;
   else if (e.key === 'ArrowRight' || e.key === 'd') cam.x += pan;
   else if (e.key === 'ArrowUp' || e.key === 'w') cam.y -= pan;
   else if (e.key === 'ArrowDown' || e.key === 's') cam.y += pan;
   else if (e.key === ' ') { paused = !paused; syncPause(); }
+  else if (e.key >= '1' && e.key <= '4') { setSpeed([1, 2, 4, 8][+e.key - 1]); }
   else if (e.key === 'Escape') { cam.follow = null; renderer.follow = null; }
   else if (e.key === '+' || e.key === '=') applyZoom(zoomStop + 1);
   else if (e.key === '-' || e.key === '_') applyZoom(zoomStop - 1);
@@ -307,7 +399,7 @@ let toastT = null;
 
 function toast(msg) {
   const el = document.getElementById('toast');
-  el.textContent = msg;
+  el.textContent = msg.charAt(0).toUpperCase() + msg.slice(1);
   el.hidden = false;
   clearTimeout(toastT);
   toastT = setTimeout(() => { el.hidden = true; }, 2600);
@@ -385,6 +477,7 @@ function refreshHud() {
   set('statFields', fields(state));
   set('statLuxuries', luxuryTrade(state));
   set('statFps', fps);
+  refreshGameHud();
 
   const card = document.getElementById('card');
   const c = cam.follow != null ? state.caravans.find((x) => x.id === cam.follow) : null;
@@ -494,6 +587,7 @@ function refreshTowns() {
 
 function syncPause() {
   document.getElementById('pause').textContent = paused ? '▶ Resume' : '❚❚ Pause';
+  syncSpeedButtons();
 }
 
 function bindUi() {
@@ -503,7 +597,7 @@ function bindUi() {
 
   const speed = document.getElementById('speed');
   speed.value = String(STYLE.speed);
-  speed.onchange = () => { STYLE.speed = +speed.value; };
+  speed.onchange = () => { STYLE.speed = +speed.value; syncSpeedButtons(); };
 
   const labels = document.getElementById('labels');
   labels.checked = STYLE.labels;
@@ -511,10 +605,7 @@ function bindUi() {
 
   document.getElementById('pause').onclick = () => { paused = !paused; syncPause(); };
 
-  document.getElementById('newWorld').onclick = () => {
-    adoptState(createState());
-    toast('New map generated.');
-  };
+  document.getElementById('newWorld').onclick = newMap;
 
   document.getElementById('save').onclick = () => {
     toast(saveLocal(state) ? `Saved (${Math.round(saveSize() / 1024)} kB).` : 'Could not save.');
@@ -551,6 +642,8 @@ function bindUi() {
     }
   };
 
+  bindGameUi();
+
   // The town list only changes when a town is founded, so poll cheaply rather
   // than rebuilding a DOM list every frame.
   setInterval(() => {
@@ -563,11 +656,319 @@ function bindUi() {
   }, 2000);
 }
 
+// ------------------------------------------------------------- the game
+//
+// Everything from here down is the game laid over the simulation: the HUD, the
+// rites panel, the town card and the phase overlays. Like the rest of this file
+// it reads state freely and changes it only through the sim's own commands —
+// `beginFaith`, `claimOmen`, `buyPerk`, `sendProphet`, `endPrologue`.
+
+const pct = (v) => `${Math.round(v * 100)}%`;
+const creed = (k) => CREEDS[k].name.replace(/^the /, '');
+const $ = (id) => document.getElementById(id);
+
+function glideTo(x, y) {
+  cam.follow = null;
+  renderer.follow = null;
+  ui.glide = { x, y };
+}
+
+function setSpeed(n) {
+  paused = false;
+  STYLE.speed = n;
+  $('speed').value = String(n);
+  syncPause();
+}
+
+function syncSpeedButtons() {
+  for (const b of $('speedctl').querySelectorAll('button')) {
+    const n = +b.dataset.speed;
+    b.classList.toggle('on', n === 0 ? paused : !paused && n === STYLE.speed);
+  }
+}
+
+function newMap() {
+  adoptState(createState());
+  toast('A new map. The roads are forming.');
+}
+
+/** Fly to the omen closest to fading, then the next one on the next press. */
+function nextOmen() {
+  const fs = state.faith;
+  if (!fs.omens.length) { toast('No omens right now — watch the sky.'); return; }
+  const list = [...fs.omens].sort((a, b) => (a.born + a.life) - (b.born + b.life));
+  const o = list[ui.omenCursor++ % list.length];
+  glideTo(o.x, o.y);
+}
+
+/** Sim events the HUD cares about. Read before the renderer drains the queue. */
+function handleEvents(events) {
+  for (const e of events) {
+    switch (e.type) {
+      case 'omenClaimed': {
+        const who = e.faith === PLAYER ? '' : `${creed(RIVAL)} `;
+        floatText(e.x, e.y, `${who}+${e.value} ✦`, CREEDS[e.faith].color);
+        if (e.faith === RIVAL) floatText(e.x, e.y - 18, 'the Choir speaks', CREEDS[RIVAL].color);
+        else if (e.by === 'preacher') floatText(e.x, e.y - 18, 'a preacher speaks', CREEDS[PLAYER].color);
+        break;
+      }
+      case 'omenFaded':
+        floatText(e.x, e.y, 'forgotten', '#b9ae9a');
+        break;
+      case 'faithBegun':
+        toast(`${CREEDS[PLAYER].name} is lit in ${e.name}.`);
+        glideTo(e.x, e.y);
+        applyZoom(1);
+        break;
+      case 'rivalRises':
+        toast(`A rival prophet rises in ${e.name}: ${CREEDS[RIVAL].name}.`);
+        floatText(e.x, e.y, '✶ a rival prophet', CREEDS[RIVAL].color);
+        break;
+      case 'prophet':
+        floatText(e.x, e.y, e.faith === PLAYER ? 'a prophet preaches' : 'a Choir prophet', CREEDS[e.faith].color);
+        if (e.faith === RIVAL) toast(`The Choir sends a prophet to ${e.name}.`);
+        break;
+      case 'perk':
+        if (e.faith === RIVAL) {
+          const p = PERKS.find((q) => q.id === e.id);
+          toast(`The Choir adopts ${p ? p.name : e.id}.`);
+        }
+        if (!$('perks').hidden) renderPerks();
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+/** Show the overlay that belongs to the phase the sim is in. */
+function syncPhase() {
+  const fs = state.faith;
+  ui.phase = fs.phase;
+  const ov = $('overlay');
+  const buttons = $('ovButtons');
+  buttons.innerHTML = '';
+  const button = (text, fn, primary = false) => {
+    const b = document.createElement('button');
+    b.textContent = text;
+    if (primary) b.className = 'primary';
+    b.onclick = fn;
+    buttons.append(b);
+    return b;
+  };
+  $('ovProgress').hidden = true;
+
+  if (fs.phase === 'prologue') {
+    ov.hidden = false;
+    $('ovTitle').textContent = 'The roads are forming';
+    $('ovBody').textContent = 'Nothing on this map is placed. Caravans cross it, wear roads into '
+      + 'it, and stop where the roads meet. A creed needs people to believe in it, so the world '
+      + 'runs ahead until it has some towns.';
+    $('ovProgress').hidden = false;
+    const early = button('Begin now', () => { endPrologue(state); syncPhase(); }, true);
+    early.id = 'ovEarly';
+    early.disabled = !canBeginEarly(state);
+  } else if (fs.phase === 'choose') {
+    ov.hidden = false;
+    $('ovTitle').textContent = 'Where is the word first spoken?';
+    $('ovBody').textContent = 'Tap a town. A busy one sends the word out on more wagons; a remote '
+      + 'one is safer, but slow. A rival prophet will rise a little later, as far from you as the '
+      + 'map allows.';
+    button('The largest town', () => {
+      const t = [...state.towns].sort((a, b) => b.pop - a.pop)[0];
+      if (t) selectTown(t.id);
+    });
+  } else if (fs.phase === 'over') {
+    ov.hidden = false;
+    const [mine, theirs] = shares(state);
+    const mins = Math.round(((fs.endedAt || state.time) - fs.started) / 60);
+    const title = fs.outcome === 'won' ? `${CREEDS[PLAYER].name} is kept at every crossroads`
+      : fs.outcome === 'extinct' ? `The last of ${CREEDS[PLAYER].name} is gone`
+        : `${CREEDS[RIVAL].name} holds the roads`;
+    $('ovTitle').textContent = title.charAt(0).toUpperCase() + title.slice(1);
+    $('ovBody').textContent = `${mins} minutes after the first sermon: ${pct(mine)} of all souls keep `
+      + `the ${creed(PLAYER)}, ${pct(theirs)} the ${creed(RIVAL)}. You read ${fs.claimed[PLAYER]} `
+      + `omens; the Choir read ${fs.claimed[RIVAL]}, and ${fs.missed} were forgotten.`;
+    button('Keep watching', () => { ov.hidden = true; });
+    button('New map', newMap, true);
+  } else {
+    ov.hidden = true;
+  }
+  refreshTownCard();
+  refreshTownbar();
+}
+
+function refreshGameHud() {
+  const fs = state.faith;
+  const [mine, theirs] = shares(state);
+  $('creedName').textContent = CREEDS[PLAYER].name;
+  $('devotion').textContent = Math.floor(fs.devotion[PLAYER]);
+  $('barMine').style.width = pct(mine);
+  $('barRival').style.width = pct(theirs);
+  $('shareText').textContent = fs.phase === 'prologue' || fs.phase === 'choose'
+    ? `${state.towns.length} towns · ${clock(state.time)} of history`
+    : `${pct(mine)} yours · ${fs.rivalOrigin != null ? `${pct(theirs)} Choir` : 'no rival yet'}`
+      + ` · win at ${pct(WIN_SHARE)}`;
+  $('omenCount').textContent = fs.omens.length;
+  $('nextOmen').classList.toggle('live', fs.omens.length > 0);
+  $('nextOmen').hidden = fs.phase !== 'play';
+  $('perkBadge').hidden = !PERKS.some((p) => canBuy(state, p.id));
+  syncSpeedButtons();
+
+  if (fs.phase === 'prologue') {
+    $('ovProgressBar').style.width = pct(Math.min(1, state.towns.length / 5));
+    const early = $('ovEarly');
+    if (early) early.disabled = !canBeginEarly(state);
+  }
+
+  // Announce a town changing hands. The first sighting of each town only
+  // records it, so loading a game doesn't announce everything at once.
+  for (const t of state.towns) {
+    const f = faithOf(t);
+    const now = f[PLAYER] >= 0.5 ? PLAYER : f[RIVAL] >= 0.5 ? RIVAL : -1;
+    const before = ui.keeps.get(t.id);
+    ui.keeps.set(t.id, now);
+    if (before === undefined || before === now || fs.phase !== 'play') continue;
+    if (now === PLAYER) toast(`${t.name} keeps ${CREEDS[PLAYER].name}.`);
+    else if (now === RIVAL) toast(`${t.name} has gone over to the Choir.`);
+  }
+
+  // Where the HUD sits over the canvas, so off-screen omen pointers can stay
+  // clear of it. Measured rather than assumed: the top bar wraps on a phone.
+  const stage = canvas.getBoundingClientRect();
+  ui.inset = {
+    top: $('topbar').getBoundingClientRect().bottom - stage.top + 24,
+    bottom: stage.bottom - $('townbar').getBoundingClientRect().top + 24,
+  };
+
+  refreshTownCard();
+  if (!$('perks').hidden) $('perkPurse').textContent = `You have ${Math.floor(fs.devotion[PLAYER])} ✦.`;
+}
+
+/** The strip of town chips along the bottom: a map index that is always in reach. */
+function refreshTownbar() {
+  const bar = $('townbar');
+  const scroll = bar.scrollLeft;
+  const towns = [...state.towns].sort((a, b) => a.region - b.region || a.founded - b.founded);
+  bar.innerHTML = towns.map((t) => {
+    const f = faithOf(t);
+    const cls = f[PLAYER] >= 0.5 ? 'mine' : f[RIVAL] >= 0.5 ? 'rival' : '';
+    return `<button class="chip ${cls}${ui.selected === t.id ? ' sel' : ''}" data-id="${t.id}">`
+      + `${t.name}<small>${Math.round(t.pop)}</small>`
+      + `<div class="bar"><i style="width:${pct(f[PLAYER])}"></i><i style="width:${pct(f[RIVAL])}"></i></div>`
+      + '</button>';
+  }).join('');
+  bar.scrollLeft = scroll;
+}
+
+function selectTown(id) {
+  ui.selected = id;
+  const t = state.towns.find((q) => q.id === id);
+  if (t && state.faith.phase !== 'choose') glideTo(t.x, t.y);
+  refreshTownCard();
+  refreshTownbar();
+}
+
+function refreshTownCard() {
+  const card = $('towncard');
+  const t = state.towns.find((q) => q.id === ui.selected);
+  if (!t) { card.hidden = true; return; }
+  const fs = state.faith;
+  const f = faithOf(t);
+  const region = state.terrain.regions[t.region];
+  card.hidden = false;
+  $('tcName').textContent = t.name;
+  $('tcSub').textContent = `${Math.round(t.pop)} souls · ${t.buildings.length} buildings · `
+    + `the ${region.name}${region.arid ? ' (arid)' : ''}`
+    + `${fs.origin === t.id ? ' · where you began' : ''}${fs.rivalOrigin === t.id ? ' · where the Choir began' : ''}`;
+  $('tcMine').style.width = pct(f[PLAYER]);
+  $('tcRival').style.width = pct(f[RIVAL]);
+  $('tcLine').textContent = fs.phase === 'prologue' || fs.phase === 'choose'
+    ? 'Nobody here has heard the word yet.'
+    : `${pct(f[PLAYER])} keep the ${creed(PLAYER)} · ${pct(f[RIVAL])} the ${creed(RIVAL)} · `
+      + `${pct(Math.max(0, 1 - f[0] - f[1]))} believe nothing`;
+  $('tcBegin').hidden = fs.phase !== 'choose';
+  $('tcBegin').textContent = `Begin in ${t.name}`;
+  const prophet = $('tcProphet');
+  prophet.hidden = fs.phase !== 'play';
+  const cost = prophetCost(state);
+  prophet.textContent = `Send a prophet (${cost} ✦)`;
+  prophet.disabled = fs.devotion[PLAYER] < cost;
+}
+
+function renderPerks() {
+  const fs = state.faith;
+  const tree = $('perkTree');
+  const branches = [...new Set(PERKS.map((p) => p.branch))];
+  const blurb = { Word: 'how it travels', Rite: 'how it holds a town', Wonder: 'how it reads the sky' };
+  tree.innerHTML = branches.map((br) => `<div class="branch"><h4>${br} · ${blurb[br] || ''}</h4>${
+    PERKS.filter((p) => p.branch === br).map((p) => {
+      const owned = has(state, PLAYER, p.id);
+      const locked = !owned && p.req && !has(state, PLAYER, p.req);
+      const cls = owned ? 'owned' : locked ? 'locked' : '';
+      const afford = canBuy(state, p.id);
+      const req = locked ? ` Needs ${PERKS.find((q) => q.id === p.req).name}.` : '';
+      return `<button class="perk ${cls}" data-perk="${p.id}" ${owned || !afford ? 'disabled' : ''}>`
+        + `<b>${p.name}<em>${owned ? 'kept' : `${p.cost} ✦`}</em></b><span>${p.desc}${req}</span></button>`;
+    }).join('')}</div>`).join('');
+  $('perkPurse').textContent = `You have ${Math.floor(fs.devotion[PLAYER])} ✦.`;
+  const theirs = fs.perks[RIVAL].map((id) => PERKS.find((p) => p.id === id).name);
+  $('rivalPerks').textContent = fs.rivalOrigin == null ? 'No rival has risen yet.'
+    : `The Choir keeps: ${theirs.length ? theirs.join(', ') : 'nothing yet'}.`;
+}
+
+function togglePerks() {
+  const el = $('perks');
+  el.hidden = !el.hidden;
+  if (!el.hidden) renderPerks();
+}
+
+function bindGameUi() {
+  $('speedctl').onclick = (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const n = +b.dataset.speed;
+    if (n === 0) { paused = !paused; syncPause(); } else setSpeed(n);
+  };
+  $('openPerks').onclick = togglePerks;
+  $('openChronicle').onclick = () => {
+    $('panel').hidden = !$('panel').hidden;
+    dpr = resizeCamera(cam, canvas, g);
+    clampCamera(cam);
+  };
+  $('nextOmen').onclick = nextOmen;
+  $('townbar').onclick = (e) => {
+    const b = e.target.closest('.chip');
+    if (b) selectTown(+b.dataset.id);
+  };
+  $('perkTree').onclick = (e) => {
+    const b = e.target.closest('.perk');
+    if (b && buyPerk(state, b.dataset.perk)) renderPerks();
+  };
+  for (const b of document.querySelectorAll('[data-close]')) {
+    b.onclick = () => {
+      if (b.dataset.close === 'towncard') selectTown(null);
+      else $(b.dataset.close).hidden = true;
+    };
+  }
+  $('tcBegin').onclick = () => {
+    if (ui.selected != null && beginFaith(state, ui.selected)) syncPhase();
+  };
+  $('tcProphet').onclick = () => {
+    if (ui.selected != null) sendProphet(state, ui.selected);
+    refreshTownCard();
+  };
+  $('tcFly').onclick = () => {
+    const t = state.towns.find((q) => q.id === ui.selected);
+    if (t) { glideTo(t.x, t.y); if (STYLE.zoom < 0.6) applyZoom(2); }
+  };
+  setInterval(refreshTownbar, 1000);
+}
+
 // -------------------------------------------------------------------- boot
 
 dpr = resizeCamera(cam, canvas, g);
 bindUi();
-applyZoom(DEFAULT_STOP);
 adoptState(loadLocal() || createState());
 syncPause();
 requestAnimationFrame(frame);
@@ -579,4 +980,5 @@ window.CROSSROADS = {
   renderer: () => renderer,
   cam,
   STYLE,
+  ui,
 };

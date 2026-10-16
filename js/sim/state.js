@@ -21,8 +21,11 @@ import {
 } from './caravans.js';
 import { updateResidents, balanceResidents } from './residents.js';
 import { produce, emptyStock, landOf } from './economy.js';
+import {
+  createFaith, tickFaith, tradeBoost, snapshotFaith, restoreFaith, packShares,
+} from './faith.js';
 
-export const SAVE_VERSION = 5;
+export const SAVE_VERSION = 6;
 export { WORLD, MAP, TILE };
 
 /** How full a town has to be before its surplus starts leaving as caravans. */
@@ -62,6 +65,8 @@ export function createState(seed = (Math.random() * 1e9) | 0) {
     // because a popup that has already played has nothing to restore.
     events: [],
     timers: { spawn: 2, upkeep: 0, frontier: 4, residents: 3 },
+    // The game the player is playing on top of all this. See faith.js.
+    faith: createFaith(),
   };
   return state;
 }
@@ -100,6 +105,7 @@ export function step(state, dt) {
       considerEmigration(state, town);
       considerTrade(state, town);
     }
+    tickFaith(state, elapsed);
     tm.upkeep = elapsed;
   }
 
@@ -161,7 +167,8 @@ function considerTrade(state, town) {
   // wait for everyone to be prosperous before anyone sets out.
   if (population(town) < 18) return;
   // Busier towns trade more, so a trunk-road town visibly out-trades a quiet one.
-  const rate = 0.010 + 0.0012 * Math.min(12, town.buildings.length);
+  // Pilgrimage, if a creed here has bought it, multiplies this.
+  const rate = (0.010 + 0.0012 * Math.min(12, town.buildings.length)) * tradeBoost(state, town);
   if (state.rng.chance(rate)) spawnTradeCaravan(state, town);
 }
 
@@ -250,6 +257,7 @@ export function snapshot(state) {
     stats: { ...state.stats },
     timers: { ...state.timers },
     wear: encodeWear(state.wear),
+    faith: snapshotFaith(state.faith),
     towns: state.towns.map((t) => ({
       id: t.id, name: t.name, x: t.x, y: t.y, founded: Math.round(t.founded),
       traffic: Math.round(t.traffic * 10) / 10, pop: Math.round(t.pop * 10) / 10,
@@ -257,6 +265,7 @@ export function snapshot(state) {
       // The stores are real state — unlike the *land*, which is a pure function
       // of the seed and the town's position and is surveyed again on restore.
       stock: round1(t.stock || emptyStock()),
+      faith: packShares(t.faith),
       buildings: t.buildings.map((b) => ({
         kind: b.kind, x: b.x, y: b.y, variant: b.variant, born: Math.round(b.born),
         // Fields only. How far through breaking the plot in the town has got,
@@ -274,6 +283,7 @@ export function snapshot(state) {
       wagons: c.wagons, souls: c.souls, carry: c.carry, goal: c.goal,
       cargo: c.cargo ? round1(c.cargo) : undefined,
       legs: c.legs, leg: c.leg, home: c.home,
+      faith: packShares(c.faith),
       // Persisted so a reloaded caravan doesn't immediately re-pick the
       // junction it was just turned away from.
       noFoundUntil: c.noFoundUntil ? Math.round(c.noFoundUntil) : undefined,
@@ -305,9 +315,11 @@ export function restore(snap) {
   Object.assign(state.stats, snap.stats || {});
   Object.assign(state.timers, snap.timers || {});
   decodeWear(snap.wear || '', state.wear);
+  state.faith = restoreFaith(snap.faith);
   state.towns = (snap.towns || []).map((t) => ({
     pop: 0, ...t,
     stock: { ...emptyStock(), ...(t.stock || {}) },
+    faith: t.faith ? [...t.faith] : [0, 0],
     buildings: [...(t.buildings || [])],
   }));
   // Survey each town's country again rather than storing it: the land is a pure
@@ -321,6 +333,7 @@ export function restore(snap) {
   }
   state.caravans = (snap.caravans || []).map((c) => ({
     ...c,
+    faith: c.faith ? [...c.faith] : [0, 0],
     path: null,     // recomputed on the caravan's next tick
     pi: 0,
     done: false,

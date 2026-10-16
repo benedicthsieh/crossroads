@@ -597,6 +597,65 @@ export function iconSprite(name, scale = STYLE.scale) {
       px.fill(1, 4, 7, 1, p.coin);
       px.set(4, 4, lighten(p.coin, 0.6));
       break;
+    // --- omens ---------------------------------------------------------------
+    // What the player taps. Each needs to say its event in one shape at
+    // bubble size, the way the luxuries do, because an omen on the far side of
+    // the map is read from a distance and has only a second or two of
+    // attention.
+    case 'fire':
+      px.fill(3, 7, 3, 1, p.trunk);                   // the bush it burns in
+      px.fill(2, 6, 5, 1, p.leaf[2]);
+      px.fill(3, 3, 3, 3, '#e8823a');
+      px.fill(4, 1, 1, 2, '#e8823a');
+      px.set(2, 4, '#e8823a'); px.set(6, 3, '#e8823a');
+      px.fill(4, 4, 1, 2, '#ffe08a');
+      break;
+    case 'wave':
+      px.fill(1, 6, 7, 2, darken(p.water, 0.2));
+      px.fill(1, 4, 3, 2, p.water);
+      px.fill(4, 3, 3, 3, p.water);
+      px.fill(5, 2, 2, 1, lighten(p.water, 0.5));
+      px.set(7, 3, lighten(p.water, 0.5));
+      break;
+    case 'bolt':
+      px.fill(5, 1, 2, 1, '#ffe46a');
+      px.fill(4, 2, 2, 1, '#ffe46a');
+      px.fill(3, 3, 4, 1, '#ffe46a');
+      px.fill(4, 4, 2, 1, '#ffe46a');
+      px.fill(3, 5, 2, 1, '#ffe46a');
+      px.set(2, 6, '#ffe46a'); px.set(2, 7, '#e0a830');
+      break;
+    case 'eye':
+      px.fill(1, 4, 7, 1, p.white);
+      px.fill(2, 3, 5, 3, p.white);
+      px.fill(3, 3, 3, 3, '#5a7fa0');
+      px.set(4, 4, p.eye);
+      px.set(3, 3, lighten('#5a7fa0', 0.5));
+      break;
+    case 'comet':
+      px.disc(6, 2, 1.6, '#fff2b0');
+      px.line(1, 7, 5, 3, '#f2c14b');
+      px.line(2, 7, 5, 4, '#b8862a');
+      px.set(6, 2, '#ffffff');
+      break;
+    case 'calf':
+      px.fill(2, 4, 5, 3, '#c89a6a');                 // a head, facing out
+      px.fill(1, 3, 1, 1, '#c89a6a'); px.fill(7, 3, 1, 1, '#c89a6a');
+      px.fill(3, 7, 3, 1, '#e8c8a8');                 // muzzle
+      px.set(3, 5, p.eye); px.set(5, 5, p.eye);
+      px.set(4, 1, '#fff2b0'); px.fill(3, 2, 3, 1, '#fff2b0'); px.set(4, 3, '#fff2b0');
+      break;
+    case 'eclipse':
+      px.disc(4, 4, 3.6, '#ffd36a');
+      px.disc(4, 4, 2.8, '#2a2030');
+      px.set(2, 2, '#fff2b0');
+      break;
+    case 'prophet':
+      // A staff and a halo: the creed itself, rather than anything it saw.
+      px.line(4, 2, 4, 8, p.wood);
+      px.disc(4, 2, 1.8, '#fff2b0');
+      px.set(4, 2, p.coin);
+      break;
     default:
       px.disc(4, 4, 3, p.white);
   }

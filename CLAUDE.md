@@ -62,6 +62,15 @@ can't keep up. `docs/EMERGENCE.md` is the written-up version of all of those
 behaviours and is the right place to start if you are changing how the map
 settles.
 
+On top of all of that sits **the game**: you play a creed trying to spread
+(`js/sim/faith.js`, written up in `docs/FAITH.md`). It is Plague Inc.-shaped:
+the world fast-forwards through a prologue until it has some towns, you pick
+where the word is first spoken, then you read omens for devotion, buy rites and
+race a rival prophet for the map. The faith travels in the caravans: a wagon
+train carries its town's mix of believers and preaches wherever it calls. So
+the roads the player watched form *are* the transmission network, and nothing
+about the game needed authoring into the map.
+
 `demo/` is the previous life of this repo — an art-style test with a hand-placed
 town and live palette / outline / rim-light knobs. It still runs, it is still the
 place to art-direct sprites, and the game's locked-in look was chosen with it.
@@ -90,6 +99,7 @@ js/sim/             GAME STATE. No DOM, no canvas, no Math.random().
   residents.js      the sampled crowd inside a town
   towns.js          founding, building, housing and population
   economy.js        food/wood/stone: what a town can reach, and what it does all day
+  faith.js          THE GAME: creeds, omens, rites, the rival, victory
   state.js          createState / step / snapshot / restore
   save.js           localStorage + pasteable share codes
 
@@ -99,7 +109,9 @@ js/render/          EVERYTHING VISUAL. Reads state, never writes it.
   roadPaint.js      incremental road overlay, repainted per dirty tile
   scenery.js        trees/crags/rocks derived from terrain (not stored)
   scene.js          draw order, depth sorting, night pass
-js/game.js          boot, main loop, input, HUD, save buttons
+  faithPaint.js     the game overlay: town banners, omen bubbles, pennants (CSS px)
+js/game.js          boot, main loop, input, HUD, save buttons, game phases
+tools/balance.mjs   plays the faith game headlessly with a scripted player
 ```
 
 ## The rules that matter
@@ -148,6 +160,20 @@ function of the seed and the town's position, so it is cached on the town at
 founding and *rebuilt on restore*, never serialised. The stores (`town.stock`)
 are real state and are saved; the land is not. If you add anything else derived
 from the map, put it on the same side of that line.
+
+**The player acts through sim commands, and only through them.** `beginFaith`,
+`claimOmen`, `buyPerk`, `sendProphet` and `endPrologue` in `faith.js` are the
+whole of the player's reach. game.js turns taps into those calls and never
+pokes a share or a devotion total directly. Two things follow from that. A
+snapshot taken mid-game is honest, and a replay would only need the command
+log. The rival, preachers and seers also call the same functions as the
+player, so there is one code path for "somebody read this omen".
+
+**Game UI is drawn in CSS pixels, not world space.** `faithPaint.js` resets
+the transform and draws banners and bubbles at a fixed size, because the game is
+mostly played at whole-map zoom and a bubble that shrinks with the camera is one
+nobody can tap. It reports what it drew as hit rectangles on `ui.hits`, and
+`pickAt` checks those before falling back to following a caravan.
 
 **Population is a number, not a crowd.** `town.pop` is who lives there;
 `js/sim/residents.js` walks a capped *sample* of them around. That gap is the
@@ -212,6 +238,10 @@ leverage:
 | `sim/economy.js` | `WOOD_PER_TILE`, `QUARRY_YIELD`, `STORE_BASE` | how fast a town can build at all |
 | `sim/state.js` | `FOUND_WEAR`, the rate in `considerTrade` | how mature a junction must be to settle; how busy the roads look |
 | `props.js` | `UNIT.building` | how much ground a building sprite covers |
+| `sim/faith.js` | `GROWTH`, `LAPSE`, `TRANSMIT` | how fast a town turns, and how much the roads carry |
+| `sim/faith.js` | `RIVAL_GROWTH`, `RIVAL_TITHE`, `RIVAL_DELAY` | difficulty. Retune with `tools/balance.mjs`, see `docs/FAITH.md` |
+| `sim/faith.js` | `OMEN_GAP`, `OMEN_LIFE`, `RIVAL_SPEAKS_AT` | how busy the tapping is, and how long you have before the rival claims it |
+| `game.js` | `PROLOGUE_BUDGET` | ms of sim per frame while the world builds itself |
 
 Current tuning lands 11–14 towns across four regions on an 840×560-tile map
 inside about 40 simulated minutes, and then holds there — the count is the
@@ -295,6 +325,12 @@ Playwright — Chromium is preinstalled in the cloud environment at
   what stops one stuck wagon eating the entire frame budget. Expect a few hundred
   paths per 40 simulated minutes, not thousands.
 
+- **The game is balanced.** `node tools/balance.mjs <seed> 0 3`, `… 0.5 5` and
+  `… 0.9 3` over three or four seeds. The idle player should lose, the diligent
+  one should win in 9–15 minutes, and the half-attentive one should be a contest.
+  An idle player who *wins* means the rival has lost its edge. A diligent one
+  winning in five minutes means omens convert too hard.
+
 `window.CROSSROADS` exposes `state`, `snapshot()`, `renderer()` and `cam` for
 poking at a running game from the console or from Playwright.
 
@@ -326,6 +362,12 @@ poking at a running game from the console or from Playwright.
 - A caravan that leaves by a far gate takes its people off the map for good.
   Population therefore leaks out over a long session, and towns refill from
   their own growth. It reads fine, but it is not a closed economy.
+- Omens and towns are tapped through `ui.hits`, which is rebuilt every frame.
+  A tap therefore lands on what was drawn last frame, which is fine at 60fps
+  and slightly laggy on a slow device.
+- The prologue speed is bounded by A*. Some seeds spend ~130ms per early
+  border-to-border search, which stretches the prologue from a few seconds to
+  half a minute. A Web Worker would fix it; the sim already has no DOM in it.
 - `demo/` opts out of the building shrink by setting `UNIT` back to 1 at
   startup (see the top of `demo/js/demo.js`), because its town is hand-placed
   at the old scale. Anything new that imports `props.js` needs to decide which

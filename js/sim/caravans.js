@@ -16,6 +16,7 @@
 // Everything in here is plain data and deterministic. All randomness goes
 // through `state.rng` or through `hash3`.
 
+import { emigrantFaith, mixFaith, preach } from './faith.js';
 import { MAP, TILE, T, WORLD, tileIndex, tileCentre, terrainCost } from './terrain.js';
 import { depositTrail, moveCost } from './roads.js';
 import { findPath } from './paths.js';
@@ -354,6 +355,8 @@ function makeCaravan(state, x, y, wagons, origin) {
     origin,
     /** Town to return to. Set only on trade circuits; settlers have no home. */
     home: null,
+    /** Shares of believers aboard, one per creed (see faith.js). Strangers believe nothing. */
+    faith: [0, 0],
     done: false,
   };
   state.caravans.push(c);
@@ -412,6 +415,7 @@ export function spawnTownCaravan(state, town) {
   if (town.pop - take < 6) return null;
   town.pop -= take;
   const c = makeCaravan(state, town.x, town.y, wagons, town.id);
+  c.faith = emigrantFaith(state, town);
   // Emigrants eat on the road, and they eat out of the stores of the town that
   // is sending them away. A hungry town therefore pays to export people —
   // which is right, and is what stops famine emigration being free.
@@ -445,6 +449,7 @@ export function spawnTradeCaravan(state, town) {
   town.pop -= take;
 
   const c = makeCaravan(state, town.x, town.y, wagons, town.id);
+  c.faith = emigrantFaith(state, town);
   c.home = town.id;
   c.goal = 'trade';
   // Load up with whatever the town has most to spare. An empty-handed run still
@@ -574,6 +579,8 @@ function repath(state, c) {
  * meal comes out of the sacks the founders walked in with.
  */
 function settle(state, c, town, founded = false) {
+  // Before the headcount changes: the mix is weighted by who was already there.
+  mixFaith(town, c.souls, c.faith);
   town.pop += c.souls;
   town.traffic += 2 + c.wagons;
   const stock = stockOf(town);
@@ -638,6 +645,7 @@ function arriveLeg(state, c) {
     // whatever it picked up on the road goes into the stores.
     const town = state.towns.find((t) => t.id === leg.townId);
     if (town) {
+      mixFaith(town, c.souls, c.faith);
       town.pop += c.souls;
       town.traffic += 2;
       if (c.cargo) unloadCargo(town, c.cargo);
@@ -652,6 +660,7 @@ function arriveLeg(state, c) {
     if (town) {
       town.traffic += 2;
       state.stats.trades++;
+      preach(state, town, c);
       const give = c.carry;
       if (c.cargo) {
         // Real goods change hands: part of the load comes off here, and this

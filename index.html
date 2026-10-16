@@ -11,15 +11,66 @@
 <div id="app">
   <div id="stage">
     <canvas id="view"></canvas>
-    <div id="hint">drag to pan · scroll or pinch to zoom · tap a caravan to follow · space to pause</div>
+
+    <div id="topbar">
+      <div class="creed"><i class="swatch mine"></i><b id="creedName">the Lantern</b></div>
+      <div class="purse" title="Devotion: spent on rites and prophets"><b id="devotion">0</b> <span>✦</span></div>
+      <div class="shares" title="Share of all settled souls">
+        <div class="bar"><i id="barMine"></i><i id="barRival"></i></div>
+        <span id="shareText">—</span>
+      </div>
+      <div class="speedctl" id="speedctl">
+        <button data-speed="0" title="Pause (space)">❚❚</button>
+        <button data-speed="1">1×</button>
+        <button data-speed="2">2×</button>
+        <button data-speed="4">4×</button>
+        <button data-speed="8">8×</button>
+      </div>
+      <button id="openPerks" class="primary" title="Rites (R)">Rites <span id="perkBadge" hidden>●</span></button>
+      <button id="openChronicle" title="The full chronicle of the map">☰</button>
+    </div>
+
+    <button id="nextOmen" title="Fly to the next omen (Tab)">Omens <b id="omenCount">0</b> ›</button>
+
+    <div id="townbar"></div>
+
+    <section id="towncard" class="card" hidden>
+      <button class="close" data-close="towncard">×</button>
+      <h3 id="tcName">—</h3>
+      <p class="tiny" id="tcSub"></p>
+      <div class="bar wide"><i id="tcMine"></i><i id="tcRival"></i></div>
+      <p id="tcLine"></p>
+      <div class="buttons">
+        <button id="tcBegin" class="primary" hidden>Begin here</button>
+        <button id="tcProphet" class="primary" hidden>Send a prophet</button>
+        <button id="tcFly">Look</button>
+      </div>
+    </section>
+
+    <section id="overlay" class="card center" hidden>
+      <h2 id="ovTitle"></h2>
+      <p id="ovBody"></p>
+      <div class="progress" id="ovProgress" hidden><i id="ovProgressBar"></i></div>
+      <div class="buttons" id="ovButtons"></div>
+    </section>
+
+    <section id="perks" class="card modal" hidden>
+      <button class="close" data-close="perks">×</button>
+      <h2>Rites</h2>
+      <p class="tiny">Spend devotion to shape how the word travels. <span id="perkPurse"></span></p>
+      <div id="perkTree"></div>
+      <p class="tiny" id="rivalPerks"></p>
+    </section>
+
     <div id="toast" hidden></div>
   </div>
 
-  <aside id="panel">
+  <aside id="panel" hidden>
     <header>
-      <h1>Crossroads</h1>
+      <h1>Chronicle</h1>
       <p class="sub">Travellers cross the map. Where they walk wears into roads, where roads
-      meet becomes a crossroads, and towns grow on the crossroads.</p>
+      meet becomes a crossroads, and towns grow on the crossroads. Your creed has to
+      travel the same way: in wagons, along roads, at the pace of trade.</p>
     </header>
 
     <section>
@@ -42,6 +93,7 @@
           <option value="4">4×</option>
           <option value="8">8×</option>
           <option value="16">16×</option>
+          <option value="32">32×</option>
         </select>
       </label>
       <div class="buttons">
