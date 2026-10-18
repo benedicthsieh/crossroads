@@ -29,6 +29,30 @@ rediscover.
 - Keep the prose in comments and docs explaining *why*, not *what*. The existing
   files set the tone.
 
+## Prototypes
+
+The main build at the repo root is the current game and stays at its URL.
+Candidate directions live beside it in dated folders, e.g.
+`2026-10-18-exploration/`, so several can be reviewed side by side on GitHub
+Pages:
+
+- **Each prototype is a full, frozen copy**: its own `index.html`,
+  `styles.css`, `js/` and whatever `tools/` it needs, with relative imports
+  throughout. That costs duplication and buys independence: a fix on main
+  does not silently change a candidate under review, and a prototype can
+  rewrite any module without branching the root. Only `demo/` is shared,
+  linked as `../demo/`.
+- **Each has its own localStorage key** (`KEY` in its `js/sim/save.js`). All
+  folders share one origin, so a prototype using the main key would overwrite
+  the player's real save.
+- **Each has a `README.md`** that says what it changed from main, why, the
+  numbers it was tuned to, and its open questions. That is the review
+  document.
+- **Promoting one** means copying its files over the root, moving its README
+  into `docs/`, and deleting the folder. Fixes made on main since the
+  prototype was cut have to be carried across by hand; `git log` on the root
+  `js/` since the commit named in the prototype's README is the list.
+
 ## What this is
 
 An idle/simulation game about roads. Nothing on the map is authored: caravans
@@ -81,6 +105,7 @@ The game itself no longer exposes those knobs.
 ```
 index.html          the game
 demo/               the archived art-style test (its own index.html + sprites.html)
+YYYY-MM-DD-slug/    prototypes: frozen full copies of the game, see "Prototypes" above
 styles.css          shared panel styling
 docs/EMERGENCE.md   what each actor wants, and which loops that closes
 

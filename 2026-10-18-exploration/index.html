@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Crossroads — exploration prototype</title>
+<link rel="stylesheet" href="styles.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ctext y=%2713%27 font-size=%2713%27%3E%F0%9F%9B%A4%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="view"></canvas>
+
+    <div id="topbar">
+      <div class="creed"><i class="swatch mine"></i><b id="creedName">the Lantern</b><span id="aspectName"></span></div>
+      <div class="purse" title="Devotion: spent on rites and preachers"><b id="devotion">0</b> <span>✦</span></div>
+      <div class="insight" title="Insight: reading an omen yourself costs one. Omens you let pass are read by your faithful, for less.">
+        <span id="insightPips"></span><small id="insightEta"></small>
+      </div>
+      <div class="shares" title="Share of all settled souls: the Lantern, the Veiled Choir, the Old Ways">
+        <div class="bar" id="shareBar"></div>
+        <span id="shareText">—</span>
+      </div>
+      <button id="pauseBtn" title="Pause (space)">❚❚</button>
+      <button id="openPerks" class="primary" title="Rites (R)">Rites <span id="perkBadge" hidden>●</span></button>
+      <button id="openChronicle" title="The full chronicle of the map">☰</button>
+    </div>
+
+    <button id="nextOmen" title="Fly to the next omen (Tab)">Omens <b id="omenCount">0</b> ›</button>
+
+    <ol id="feed" aria-label="Recent events"></ol>
+
+    <div id="townbar"></div>
+
+    <section id="towncard" class="card" hidden>
+      <button class="close" data-close="towncard">×</button>
+      <h3 id="tcName">—</h3>
+      <p class="tiny" id="tcSub"></p>
+      <div class="bar wide" id="tcBar"></div>
+      <p id="tcLine"></p>
+      <div class="buttons">
+        <button id="tcBegin" class="primary" hidden>Begin here</button>
+        <button id="tcProphet" class="primary" hidden>Send a preacher</button>
+        <button id="tcFly">Look</button>
+      </div>
+    </section>
+
+    <section id="overlay" class="card center" hidden>
+      <h2 id="ovTitle"></h2>
+      <p id="ovBody"></p>
+      <div class="progress" id="ovProgress" hidden><i id="ovProgressBar"></i></div>
+      <div class="buttons" id="ovButtons"></div>
+    </section>
+
+    <section id="perks" class="card modal" hidden>
+      <button class="close" data-close="perks">×</button>
+      <h2>Rites</h2>
+      <p class="tiny" id="aspectLine"></p>
+      <p class="tiny">Three are revealed at a time; buying one reveals the next. Some come in
+      pairs, and taking one closes the other for good. <span id="perkPurse"></span></p>
+      <div id="perkTree"></div>
+      <p class="tiny" id="ownedPerks"></p>
+      <h2 class="chron">Chronicle</h2>
+      <p class="tiny">Nothing here can be lost. Each first written refills your insight.</p>
+      <ul id="marks"></ul>
+    </section>
+
+    <div id="toast" hidden></div>
+  </div>
+
+  <aside id="panel" hidden>
+    <header>
+      <h1>Chronicle</h1>
+      <p class="sub"><b>Exploration prototype, 2026-10-18.</b> The main build is at
+      <a href="../">../</a>. What changed is written up in <a href="README.md">README.md</a>.</p>
+      <p class="sub">Travellers cross the map. Where they walk wears into roads, where roads
+      meet becomes a crossroads, and towns grow on the crossroads. Your creed has to
+      travel the same way: in wagons, along roads, at the pace of trade.</p>
+    </header>
+
+    <section>
+      <h2>View</h2>
+      <label class="row">
+        <span>Zoom</span>
+        <input type="range" id="zoom" min="0" max="5" step="1" />
+        <output id="zoomVal">Town</output>
+      </label>
+      <label class="check"><input type="checkbox" id="labels" /> <span>Show who's who</span></label>
+    </section>
+
+    <section>
+      <h2>Simulation</h2>
+      <div class="buttons">
+        <button id="pause">❚❚ Pause</button>
+        <button id="newWorld">New map</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>The map so far</h2>
+      <dl class="stats">
+        <dt>Elapsed</dt><dd id="statTime">0:00</dd>
+        <dt>Towns</dt><dd id="statTowns">0</dd>
+        <dt>Townsfolk</dt><dd id="statSettled">0</dd>
+        <dt>On the road</dt><dd id="statPop">0</dd>
+        <dt>Settled so far</dt><dd id="statTravelers">0</dd>
+        <dt>Road tiles</dt><dd id="statRoads">0</dd>
+        <dt>Trades</dt><dd id="statTrades">0</dd>
+        <dt>Stores</dt><dd id="statStores">0f 0w 0s</dd>
+        <dt>Fields</dt><dd id="statFields">0</dd>
+        <dt>Luxuries</dt><dd id="statLuxuries">none in circulation</dd>
+        <dt>FPS</dt><dd id="statFps">0</dd>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Towns</h2>
+      <ul class="legend" id="townList"><li class="quiet">None yet — the roads have to meet first.</li></ul>
+    </section>
+
+    <section id="card" hidden>
+      <h2>Following</h2>
+      <p class="cardline"><strong id="cardName">—</strong> <em id="cardRole"></em></p>
+      <p class="cardline" id="cardItem"></p>
+      <p class="tiny">Press Esc or drag the map to stop following.</p>
+    </section>
+
+    <section>
+      <h2>Saving</h2>
+      <div class="buttons">
+        <button id="save">Save</button>
+        <button id="load">Load</button>
+      </div>
+      <div class="buttons">
+        <button id="copyCode">Copy share code</button>
+        <button id="pasteCode">Paste code</button>
+      </div>
+      <p class="tiny">The game state is plain data kept apart from the renderer, so a save is
+      just the seed plus what the simulation has changed — road wear, towns and who's currently
+      walking. Autosaves every 30 seconds. A share code is the same thing as text: paste one
+      into another browser and it continues from exactly there.</p>
+    </section>
+
+    <section>
+      <h2>What to watch for</h2>
+      <ul class="legend">
+        <li><b>Nothing is placed.</b> No road, junction or town is authored — all of it is
+        downstream of where the ground is cheap to cross.</li>
+        <li><b>Rivers and mountains push back.</b> Wading a river or climbing a ridge is
+        expensive, so traffic funnels through fords and passes.</li>
+        <li><b>The map is four countries.</b> Ranges and lakes fall along the borders
+        between them, so each region is a day's hard travel from its neighbours and no
+        one of them can take more than a handful of the towns.</li>
+        <li><b>Wear compounds.</b> Walked ground is easier to walk, so the first faint
+        tracks pull in the next travellers and thicken into roads.</li>
+        <li><b>Crossroads settle.</b> A caravan carrying enough people weighs up every town
+        it could join against the best empty junction on the map, and sometimes stops for
+        good — that is where towns come from.</li>
+        <li><b>Housing decides who stays.</b> Towns build homes when they run short of beds,
+        and a town with free beds is the one passing caravans choose.</li>
+        <li><b>The first houses are the wagons.</b> A founding party unhitches its covered
+        wagons and pitches them as tents; timber houses replace them one at a time, on the
+        same ground, as the town gets round to felling enough wood.</li>
+        <li><b>Buildings are made of somewhere.</b> Timber comes off the forest, stone out of
+        a quarry that has to be dug first, and nothing made of masonry — the well, the market,
+        the smithy — can be started until it is. A town with no rock within reach has to trade
+        for its stone or stay a village of houses.</li>
+        <li><b>Everybody eats.</b> Hunting and fishing are free but the land caps them, so a
+        growing town has to clear fields — and clearing costs it the hands that were feeding
+        people. A town that outruns its food stops growing, and one that runs out sends its
+        people away to find somewhere better.</li>
+        <li><b>The waste is poor, and it has the spice.</b> Sand grows nothing to cut,
+        feeds no game and cannot be ploughed, so a desert town buys its dinner — and it
+        is the only place on the map where spice comes from.</li>
+        <li><b>Luxuries reward variety, not tonnage.</b> Spice grows in one region, the
+        herbs change with latitude, and gems come out of a few scattered lodes and only
+        where somebody has dug a quarry. A town holding all three is worth far more than
+        one sitting on a mountain of its own, so trade runs cross regions to swap rather
+        than calling next door.</li>
+        <li><b>The borders go quiet.</b> Arrivals from off the map taper off; before long
+        most traffic is towns sending their own surplus somewhere else.</li>
+        <li><b>A ford that gets busy enough becomes a bridge.</b></li>
+        <li><b>The map keeps its scars.</b> Lightning burns forest down to open ground, and a
+        flood drowns the low fields by a river and sometimes leaves a new ford. Roads re-route
+        around both.</li>
+        <li><b>Nobody arrives believing nothing.</b> Settlers from one side of the world keep the
+        Veiled Choir, from the other the Old Ways, and the towns between them end up mixed.</li>
+      </ul>
+      <p class="tiny">The old art-style test, with the palette, outline and rim-light knobs
+      the look was chosen with, still lives at <a href="../demo/">demo/</a>.</p>
+    </section>
+  </aside>
+</div>
+<script type="module" src="js/game.js"></script>
+</body>
+</html>
