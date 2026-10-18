@@ -227,6 +227,7 @@ leverage:
 | `sim/luxuries.js` | `SPICE_CEILING`, `HERB_CEILING`, `GEMS_PER_LODE` | how fast each luxury accumulates |
 | `sim/economy.js` | `LUXURY_TRAFFIC` | what standing is actually worth, in buildings |
 | `sim/towns.js` | `MAX_PER_REGION`, `MAX_TOWNS` | 2–5 towns per region is the target; the global cap is below 4x5 on purpose |
+| `sim/paths.js` | `GUIDE_TRUST`, `BLOCK` | how much route quality is traded for search speed. 1.0 is honest and five times slower |
 | `sim/roads.js` | `WEAR_PER_UNIT` (in caravans.js), `WEAR_FULL` | how fast roads form |
 | `sim/roads.js` | `DECAY_HALFLIFE`, `ROAD_COST` | how long an unused road survives; what a finished one costs |
 | `sim/towns.js` | `TOWN_SPACING`, `MAX_TOWNS` | how far apart towns must be, and the hard cap |
@@ -263,6 +264,8 @@ for a quarter of the tiles fans out into a disc and gives up mid-journey),
 `stride` in `findGates`, `ROAM_RANGE`, `WEAR_PER_UNIT` and `DECAY_HALFLIFE`
 (four times the ground and twice the traffic means half the boots per tile),
 `MAX_EXPANSIONS`, `TOWN_SPACING`, and the `EDGE` margin in `bestJunctions`.
+The coarse guide in `paths.js` scales by itself (its `BLOCK` is in tiles), but
+`GUIDE_MIN_SPAN` is not.
 
 ## Running and testing
 
@@ -365,9 +368,14 @@ poking at a running game from the console or from Playwright.
 - Omens and towns are tapped through `ui.hits`, which is rebuilt every frame.
   A tap therefore lands on what was drawn last frame, which is fine at 60fps
   and slightly laggy on a slow device.
-- The prologue speed is bounded by A*. Some seeds spend ~130ms per early
-  border-to-border search, which stretches the prologue from a few seconds to
-  half a minute. A Web Worker would fix it; the sim already has no DOM in it.
+- Paths are not optimal, on purpose. Long searches are steered by a coarse
+  8×8-block distance field that A* trusts a quarter more than it should
+  (`GUIDE_TRUST` in `paths.js`), so routes come out roughly 10% dearer than the
+  cheapest one. That took the prologue from up to 16 s of wall time on bad
+  seeds to about one second on all of them, and stopped the ~40% of early
+  long searches that used to give up and beeline. A Web Worker was the other
+  option and would not have helped: it moves the wait off the main thread,
+  but the player is waiting for the prologue either way.
 - `demo/` opts out of the building shrink by setting `UNIT` back to 1 at
   startup (see the top of `demo/js/demo.js`), because its town is hand-placed
   at the old scale. Anything new that imports `props.js` needs to decide which

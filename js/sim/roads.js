@@ -19,7 +19,7 @@ export const WEAR_FULL = 1.8;
 export const WEAR_MAX = 2.6;
 
 /** What a fully worn road costs to walk, whatever it was cut through. */
-const ROAD_COST = 0.6;
+export const ROAD_COST = 0.6;
 
 /**
  * Roads fade if nobody uses them. Slow — an abandoned road is still a road.

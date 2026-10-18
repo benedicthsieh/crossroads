@@ -135,8 +135,3 @@ slowly.
   network.
 - **Victory.** "75% of souls" is a placeholder. Holding every region's largest
   town, or a pilgrimage route that links all four, would be more about the map.
-- **The prologue's cost.** On some seeds early A* searches take around 130 ms
-  each, because border-to-border routes over mountain seams expand a long way,
-  and the prologue then takes 20–30 seconds rather than 5–10. The sim has no
-  DOM in it, so moving the prologue to a Web Worker is the clean fix if it
-  starts to grate.
