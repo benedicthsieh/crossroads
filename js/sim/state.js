@@ -320,7 +320,10 @@ export function restore(snap) {
     pop: 0, ...t,
     stock: { ...emptyStock(), ...(t.stock || {}) },
     faith: t.faith ? [...t.faith] : [0, 0],
-    buildings: [...(t.buildings || [])],
+    // Copied all the way down: the sim mutates buildings, legs and cargo in
+    // place, and two states restored from one snapshot object must not share
+    // any of them or they stop being independent.
+    buildings: (t.buildings || []).map((b) => ({ ...b })),
   }));
   // Survey each town's country again rather than storing it: the land is a pure
   // function of the seed and where the town sits, so a save has no business
@@ -333,6 +336,8 @@ export function restore(snap) {
   }
   state.caravans = (snap.caravans || []).map((c) => ({
     ...c,
+    legs: c.legs ? c.legs.map((l) => ({ ...l })) : c.legs,
+    cargo: c.cargo ? { ...c.cargo } : c.cargo,
     faith: c.faith ? [...c.faith] : [0, 0],
     path: null,     // recomputed on the caravan's next tick
     pi: 0,
